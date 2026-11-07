@@ -10,8 +10,48 @@ import threading
 import queue
 import numpy as np
 import sounddevice as sd
+from scipy.io import wavfile
 
 from .audio_generator import simulate_pipe_resonance
+
+
+def load_wav_file(file_path: str) -> Tuple[np.ndarray, int]:
+    """
+    Carga un archivo de audio WAV y retorna el arreglo normalizado [-1, 1] y la tasa de muestreo.
+    Convierte automáticamente a mono si el archivo es multicanal.
+    """
+    sample_rate, data = wavfile.read(file_path)
+
+    # Convertir a flotante normalizado [-1.0, 1.0]
+    if data.dtype == np.int16:
+        data = data.astype(np.float32) / 32768.0
+    elif data.dtype == np.int32:
+        data = data.astype(np.float32) / 2147483648.0
+    elif data.dtype == np.uint8:
+        data = (data.astype(np.float32) - 128.0) / 128.0
+    elif np.issubdtype(data.dtype, np.floating):
+        data = data.astype(np.float32)
+
+    # Si es estéreo/multicanal, tomar promedio a mono
+    if data.ndim > 1:
+        data = np.mean(data, axis=1)
+
+    return data, int(sample_rate)
+
+
+def save_wav_file(file_path: str, audio_data: np.ndarray, sample_rate: int = 44100) -> None:
+    """
+    Guarda un arreglo de audio flotante normalizado como archivo WAV de 16 bits.
+    """
+    # Normalizar para evitar clipping
+    max_val = np.max(np.abs(audio_data))
+    if max_val > 0.99:
+        audio_norm = audio_data / max_val * 0.95
+    else:
+        audio_norm = audio_data
+
+    int_data = (audio_norm * 32767.0).astype(np.int16)
+    wavfile.write(file_path, sample_rate, int_data)
 
 
 def list_audio_devices() -> Dict[str, List[Dict[str, object]]]:

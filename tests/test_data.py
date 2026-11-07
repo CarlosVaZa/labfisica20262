@@ -61,6 +61,21 @@ class TestDataManager(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    def test_export_html_report(self):
+        self.dataset.load_sample_dataset()
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            self.dataset.export_html_report(tmp_path)
+            self.assertTrue(os.path.exists(tmp_path))
+            with open(tmp_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("Velocidad Experimental", content)
+            self.assertIn("Grupo 1", content)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
 
 if __name__ == "__main__":
     unittest.main()

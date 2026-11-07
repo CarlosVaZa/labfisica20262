@@ -156,12 +156,13 @@ Las dependencias principales son:
 ## 🚀 **6. Guía de Uso**
 
 ### **Modo Gráfico (GUI)**
-Para iniciar la interfaz gráfica interactiva, ejecute:
+Para iniciar la interfaz gráfica interactiva con gráficos en tiempo real, ejecute:
 ```bash
 python main.py
 # o también:
 python run_gui.py
 ```
+*(Al abrir la interfaz visual, la tabla de datos inicia completamente vacía para recibir las mediciones reales del usuario).*
 
 La interfaz cuenta con cuatro pestañas especializadas:
 1. **🎙️ Captura y Espectro en Vivo**:

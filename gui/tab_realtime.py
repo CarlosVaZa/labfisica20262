@@ -101,6 +101,20 @@ class RealtimeTab(ttk.Frame):
         )
         btn_record.pack(fill=tk.X, pady=(0, 8))
 
+        btn_load_wav = tk.Button(
+            control_frame,
+            text="📂 Cargar Archivo WAV",
+            bg=COLORS["secondary"],
+            fg="white",
+            font=FONTS["body_bold"],
+            relief=tk.FLAT,
+            padx=10,
+            pady=6,
+            cursor="hand2",
+            command=self._load_wav_dialog
+        )
+        btn_load_wav.pack(fill=tk.X, pady=(0, 8))
+
         btn_add = tk.Button(
             control_frame,
             text="➕ Guardar en Experimento",
@@ -260,6 +274,24 @@ class RealtimeTab(ttk.Frame):
 
         if was_streaming:
             self._toggle_stream()
+
+    def _load_wav_dialog(self):
+        from tkinter import filedialog
+        from core.audio_capture import load_wav_file
+
+        file_path = filedialog.askopenfilename(
+            title="Seleccionar archivo de audio WAV",
+            filetypes=[("Archivos WAV", "*.wav"), ("Todos los archivos", "*.*")]
+        )
+        if not file_path:
+            return
+
+        try:
+            audio, sr = load_wav_file(file_path)
+            self._process_and_plot(audio, is_live=False)
+            self.app.set_status(f"Archivo de audio cargado: {file_path}")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo cargar el archivo WAV:\n{e}")
 
     def _process_and_plot(self, audio: np.ndarray, is_live: bool = False):
         if len(audio) == 0:

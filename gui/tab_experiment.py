@@ -124,6 +124,9 @@ class ExperimentTab(ttk.Frame):
         self.lbl_end_corr = ttk.Label(self.results_frame, text="ΔL exp: -- mm", font=FONTS["body"])
         self.lbl_end_corr.grid(row=1, column=0, columnspan=2, padx=8, pady=(4, 0), sticky=tk.W)
 
+        btn_report = ttk.Button(self.results_frame, text="📄 Generar Informe HTML", command=self._generate_report)
+        btn_report.grid(row=1, column=2, padx=8, pady=(4, 0), sticky=tk.E)
+
         btn_save_plot = ttk.Button(self.results_frame, text="📷 Guardar Gráfica PNG", command=self._save_plot)
         btn_save_plot.grid(row=1, column=3, padx=8, pady=(4, 0), sticky=tk.E)
 
@@ -264,6 +267,23 @@ class ExperimentTab(ttk.Frame):
         if path:
             self.fig.savefig(path, dpi=200)
             messagebox.showinfo("Guardar", f"Gráfica guardada en:\n{path}")
+
+    def _generate_report(self):
+        if not self.app.dataset.measurements:
+            messagebox.showwarning("Aviso", "No hay mediciones en la tabla para generar el informe.")
+            return
+
+        path = filedialog.asksaveasfilename(
+            defaultextension=".html",
+            filetypes=[("Informe HTML", "*.html"), ("Todos los archivos", "*.*")],
+            initialfile="informe_laboratorio_grupo1.html"
+        )
+        if path:
+            try:
+                self.app.dataset.export_html_report(path)
+                messagebox.showinfo("Informe Generado", f"Informe HTML creado exitosamente en:\n{path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo generar el informe:\n{e}")
 
     def _show_add_dialog(self):
         dlg = tk.Toplevel(self)

@@ -23,6 +23,8 @@ from .audio_capture import (
     list_audio_devices,
     AudioStreamer,
     record_burst,
+    load_wav_file,
+    save_wav_file,
 )
 from .audio_generator import (
     generate_pure_tone,
