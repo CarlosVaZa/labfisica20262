@@ -65,11 +65,15 @@ class AcousticLabApp(tk.Tk):
         style.map("Treeview", background=[("selected", "#2563eb")], foreground=[("selected", "#ffffff")])
 
     def _build_header(self):
-        header_frame = tk.Frame(self, bg="#1e3a8a", padx=15, pady=10)
+        header_frame = tk.Frame(self, bg="#1e3a8a", padx=15, pady=8)
         header_frame.pack(fill=tk.X)
 
+        # Lado izquierdo del encabezado: Títulos
+        left_header = tk.Frame(header_frame, bg="#1e3a8a")
+        left_header.pack(side=tk.LEFT, fill=tk.Y, anchor=tk.W)
+
         title_lbl = tk.Label(
-            header_frame,
+            left_header,
             text="PROYECTO GRUPO 1 - LABORATORIO DE FISICA",
             font=("Segoe UI", 14, "bold"),
             fg="#bfdbfe",
@@ -78,13 +82,56 @@ class AcousticLabApp(tk.Tk):
         title_lbl.pack(anchor=tk.W)
 
         subtitle_lbl = tk.Label(
-            header_frame,
+            left_header,
             text="Medición de la velocidad del sonido mediante resonancia acústica y programación en Python",
             font=("Segoe UI", 11),
             fg="#ffffff",
             bg="#1e3a8a"
         )
         subtitle_lbl.pack(anchor=tk.W)
+
+        # Lado derecho del encabezado: Recuadro visualizador de ondas sonoras (Osciloscopio / Transmisor)
+        right_header = tk.Frame(header_frame, bg="#1e3a8a")
+        right_header.pack(side=tk.RIGHT, padx=5, pady=0)
+
+        osc_box = tk.Frame(right_header, bg="#0f172a", bd=1, relief=tk.SOLID, padx=6, pady=4)
+        osc_box.pack(side=tk.RIGHT)
+
+        top_info = tk.Frame(osc_box, bg="#0f172a")
+        top_info.pack(fill=tk.X, pady=(0, 2))
+
+        lbl_wave_title = tk.Label(
+            top_info,
+            text="📡 MONITOR DE ONDA SONORA",
+            font=("Segoe UI", 8, "bold"),
+            fg="#38bdf8",
+            bg="#0f172a"
+        )
+        lbl_wave_title.pack(side=tk.LEFT)
+
+        self.lbl_wave_mode = tk.Label(
+            top_info,
+            text="● EN ESPERA",
+            font=("Segoe UI", 8, "bold"),
+            fg="#4ade80",
+            bg="#0f172a"
+        )
+        self.lbl_wave_mode.pack(side=tk.RIGHT)
+
+        # Canvas para dibujar las ondas osciloscópicas en tiempo real
+        self.wave_canvas = tk.Canvas(
+            osc_box,
+            width=290,
+            height=46,
+            bg="#030712",
+            highlightthickness=0
+        )
+        self.wave_canvas.pack()
+
+        # Iniciar bucle de animación de la onda acústica en el encabezado
+        self.wave_phase = 0.0
+        self.is_recording = False
+        self._animate_wave_header()
 
     def _build_main_layout(self):
         # Contenedor central dividido en 2 columnas:
@@ -369,14 +416,82 @@ class AcousticLabApp(tk.Tk):
         except Exception:
             dur = 2.0
 
+        self.is_recording = True
         self.btn_record.config(state=tk.DISABLED, text=f"⏳ GRABANDO AUDIO... ({dur:.1f} s)", bg="#d97706")
         self.set_status(f"Grabando audio del micrófono ({dur:.1f} segundos)... Sople sobre la boca del tubo...")
         self.update()
 
         audio = record_microphone(duration_sec=dur, sample_rate=44100)
 
+        self.is_recording = False
         self.btn_record.config(state=tk.NORMAL, text=f"🎙️ CAPTURAR SONIDO CON MICRÓFONO ({dur:.1f} s)", bg="#2563eb")
         self._process_audio_signal(audio, sample_rate=44100)
+
+    def _animate_wave_header(self):
+        """Dibuja en tiempo real las ondas acústicas en el recuadro del encabezado."""
+        if not hasattr(self, "wave_canvas") or not self.wave_canvas.winfo_exists():
+            return
+
+        c = self.wave_canvas
+        w = 290
+        h = 46
+        mid_y = h / 2.0
+
+        c.delete("all")
+
+        # Rejilla sutil de fondo (estilo osciloscopio / transmisor)
+        c.create_line(0, mid_y, w, mid_y, fill="#1e293b", dash=(3, 3))
+        for gx in range(40, w, 40):
+            c.create_line(gx, 0, gx, h, fill="#0f172a", dash=(2, 4))
+
+        if getattr(self, "is_recording", False):
+            # Estado grabando: onda acústica vibrante y enérgica en color ámbar
+            self.lbl_wave_mode.config(text="● GRABANDO...", fg="#f59e0b")
+            self.wave_phase += 0.35
+            pts = []
+            for x in range(0, w, 3):
+                y = mid_y + (15.0 * np.sin(0.08 * x - self.wave_phase) +
+                             6.0 * np.sin(0.18 * x + self.wave_phase * 1.5) +
+                             np.random.normal(0, 1.2))
+                y = max(3.0, min(h - 3.0, y))
+                pts.extend([x, y])
+            if len(pts) >= 4:
+                c.create_line(*pts, fill="#fbbf24", width=2, smooth=True)
+
+        elif self.last_audio_data is not None and len(self.last_audio_data) > 0:
+            # Estado con audio capturado: muestra la forma de onda real registrada
+            f_txt = f"f₁ = {self.current_freq_hz:.1f} Hz" if self.current_freq_hz > 0 else "SEÑAL ACTIVA"
+            self.lbl_wave_mode.config(text=f"● {f_txt}", fg="#38bdf8")
+
+            # Tomar una ventana representativa del audio real y mapear a los 290 px
+            audio = self.last_audio_data
+            step = max(1, len(audio) // w)
+            sample_segment = audio[::step][:w]
+            max_amp = np.max(np.abs(sample_segment)) if len(sample_segment) > 0 else 1.0
+            scale = (mid_y - 4.0) / max(0.02, max_amp)
+
+            pts = []
+            for x, s in enumerate(sample_segment):
+                y = mid_y - s * scale
+                y = max(2.0, min(h - 2.0, y))
+                pts.extend([x, y])
+
+            if len(pts) >= 4:
+                c.create_line(*pts, fill="#38bdf8", width=1.8, smooth=True)
+
+        else:
+            # Estado en espera: onda senoidal suave y continua en color verde cian
+            self.lbl_wave_mode.config(text="● EN ESPERA", fg="#4ade80")
+            self.wave_phase += 0.08
+            pts = []
+            for x in range(0, w, 4):
+                y = mid_y + 11.0 * np.sin(0.06 * x - self.wave_phase)
+                pts.extend([x, y])
+            if len(pts) >= 4:
+                c.create_line(*pts, fill="#4ade80", width=1.6, smooth=True)
+
+        # Reprogramar siguiente frame cada 45 ms (~22 fps suaves sin saturar CPU)
+        self.after(45, self._animate_wave_header)
 
     def _load_wav_file(self):
         """Carga un archivo WAV existente para análisis."""
@@ -419,7 +534,8 @@ class AcousticLabApp(tk.Tk):
                 dlg.destroy()
                 l_cm = self.var_length_cm.get()
                 self._compute_and_display(l_cm / 100.0, f_val)
-                self.set_status(f"Frecuencia manual ingresada: {f_val:.1f} Hz")
+                self._register_measurement(silent=True)
+                self.set_status(f"Frecuencia manual ingresada y registrada: {f_val:.1f} Hz")
             except ValueError:
                 messagebox.showerror("Error", "Ingrese una frecuencia numérica positiva.", parent=dlg)
 
@@ -436,24 +552,55 @@ class AcousticLabApp(tk.Tk):
         # Detección del pico de resonancia
         peak_info = detect_resonance_frequency(freqs, mags, min_freq=120.0, max_freq=1800.0)
         f1 = peak_info["frequency_hz"]
+        peak_amp = peak_info["amplitude"]
 
         self.last_audio_data = audio
         self.last_freqs = freqs
         self.last_mags = mags
         self.current_freq_hz = f1
 
-        # Actualizar gráfica FFT
+        # Redibujar espectro FFT con columnas bien visibles y auto-escalado dinámico
+        self.ax_fft.clear()
+        self.ax_fft.grid(True, linestyle="--", alpha=0.4)
+        self.ax_fft.set_xlabel("Frecuencia (Hz)", fontsize=8)
+        self.ax_fft.set_ylabel("Amplitud", fontsize=8)
+        self.ax_fft.set_xlim(100, 1500)
+
         mask = (freqs >= 100) & (freqs <= 1500)
         if np.any(mask):
-            self.line_fft.set_data(freqs[mask], mags[mask])
-            max_m = np.max(mags[mask]) if len(mags[mask]) > 0 else 1.0
-            self.ax_fft.set_ylim(0.0, max(0.1, max_m * 1.2))
+            sub_f = freqs[mask]
+            sub_m = mags[mask]
+            max_m = np.max(sub_m) if len(sub_m) > 0 else 1.0
 
-        if f1 > 0:
-            self.peak_marker.set_data([f1], [peak_info["amplitude"]])
-            self.ax_fft.set_title(f"Espectro FFT (Pico f₁ = {f1:.1f} Hz)", fontsize=10, fontweight="bold", color="#1e3a8a")
-        else:
-            self.peak_marker.set_data([], [])
+            # 1. Relleno bajo la curva para que parezca una columna espectral visible
+            self.ax_fft.fill_between(sub_f, 0, sub_m, color="#93c5fd", alpha=0.45, label="Espectro FFT")
+            # 2. Línea de contorno azul fuerte
+            self.ax_fft.plot(sub_f, sub_m, color="#1d4ed8", lw=1.8)
+
+            # Auto-escalar el eje Y a la amplitud real del pico para que siempre se vea alto y claro
+            ylim_top = max(0.005, max_m * 1.35)
+            self.ax_fft.set_ylim(0.0, ylim_top)
+
+            if f1 > 0:
+                # 3. Línea vertical destacada en el pico fundamental f1
+                self.ax_fft.vlines(f1, 0, peak_amp, color="#dc2626", linestyle="--", lw=1.5)
+                # 4. Punto rojo marcador en la cúspide
+                self.ax_fft.plot([f1], [peak_amp], "ro", markersize=8, label=f"Pico f₁ = {f1:.1f} Hz")
+                # 5. Etiqueta de texto con la frecuencia exacta
+                self.ax_fft.text(
+                    f1,
+                    min(ylim_top * 0.96, peak_amp + ylim_top * 0.04),
+                    f"f₁ = {f1:.1f} Hz",
+                    color="#b91c1c",
+                    fontweight="bold",
+                    fontsize=9,
+                    ha="center"
+                )
+                self.ax_fft.set_title(f"Espectro FFT (Pico f₁ = {f1:.1f} Hz)", fontsize=10, fontweight="bold", color="#1e3a8a")
+            else:
+                self.ax_fft.set_title("Espectro FFT (Picos de Frecuencia)", fontsize=10, fontweight="bold", color="#1e3a8a")
+
+            self.ax_fft.legend(loc="upper right", fontsize=8)
 
         self.canvas.draw_idle()
 
@@ -461,7 +608,10 @@ class AcousticLabApp(tk.Tk):
         l_cm = self.var_length_cm.get()
         l_m = l_cm / 100.0
         self._compute_and_display(l_m, f1)
-        self.set_status(f"Captura completada. Frecuencia fundamental detectada: {f1:.1f} Hz.")
+
+        # Agregar automáticamente esta medición a la tabla
+        self._register_measurement(silent=True)
+        self.set_status(f"Medición completada y registrada en la tabla: L = {l_cm:.1f} cm, f₁ = {f1:.1f} Hz.")
 
     def _compute_and_display(self, length_m: float, freq_hz: float):
         """Calcula la velocidad del sonido según v = 4 * L * f1 y actualiza la pantalla."""
@@ -488,7 +638,7 @@ class AcousticLabApp(tk.Tk):
 
         self.btn_register.config(state=tk.NORMAL)
 
-    def _register_measurement(self):
+    def _register_measurement(self, silent: bool = False):
         """Agrega la medición actual a la tabla de resultados (Sección 8 y 9)."""
         if not self.current_calc_result:
             return
@@ -509,9 +659,17 @@ class AcousticLabApp(tk.Tk):
             f"{entry['precision_pct']:.2f}%"
         ))
 
+        # Seleccionar la fila recién agregada
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[-1])
+            self.tree.see(children[-1])
+
         self._update_comparison_plot()
-        self.set_status(f"Medición #{entry['id']} registrada: L = {l_cm:.1f} cm, f1 = {f1:.1f} Hz, v = {entry['v_calculada']:.2f} m/s")
-        messagebox.showinfo("Medición Registrada", f"Se agregó la medición a la tabla:\n\n• Longitud L: {l_cm:.1f} cm ({l_cm/100:.3f} m)\n• Frecuencia f1: {f1:.1f} Hz\n• v = 4 · L · f1 = {entry['v_calculada']:.2f} m/s\n• Error respecto a 343 m/s: {entry['error_pct']:.2f}%")
+        self.set_status(f"Medición #{entry['id']} registrada en la tabla: L = {l_cm:.1f} cm, f1 = {f1:.1f} Hz, v = {entry['v_calculada']:.2f} m/s")
+
+        if not silent:
+            messagebox.showinfo("Medición Registrada", f"Se agregó la medición a la tabla:\n\n• Longitud L: {l_cm:.1f} cm ({l_cm/100:.3f} m)\n• Frecuencia f1: {f1:.1f} Hz\n• v = 4 · L · f1 = {entry['v_calculada']:.2f} m/s\n• Error respecto a 343 m/s: {entry['error_pct']:.2f}%")
 
     def _update_comparison_plot(self):
         """Actualiza la gráfica comparativa de cómo cambia la frecuencia con la cantidad de agua (Sección 8)."""
