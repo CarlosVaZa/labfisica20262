@@ -1,5 +1,6 @@
 """
-Pruebas Unitarias para el Módulo de Datos
+Pruebas Unitarias para el Registro de Mediciones
+================================================
 """
 
 import unittest
@@ -9,69 +10,35 @@ import tempfile
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from core.data_manager import ExperimentDataset
+from core.data_manager import ExperimentRegistry
 
 
 class TestDataManager(unittest.TestCase):
 
     def setUp(self):
-        self.dataset = ExperimentDataset("Test Lab")
+        self.registry = ExperimentRegistry()
 
-    def test_add_and_remove_measurements(self):
-        self.dataset.add_measurement(0.20, 425.0, "Punto 1")
-        self.dataset.add_measurement(0.30, 285.0, "Punto 2")
-        self.assertEqual(len(self.dataset.measurements), 2)
+    def test_add_and_calculate_speed(self):
+        # Medición con L = 20 cm, f1 = 425 Hz
+        entry = self.registry.add_measurement(length_cm=20.0, frequency_hz=425.0)
 
-        removed = self.dataset.remove_measurement(1)
-        self.assertTrue(removed)
-        self.assertEqual(len(self.dataset.measurements), 1)
-        self.assertEqual(self.dataset.measurements[0]["id"], 1)
+        self.assertEqual(len(self.registry.measurements), 1)
+        self.assertEqual(entry["v_calculada"], 340.0)
+        self.assertEqual(entry["v_teorica"], 343.0)
+        self.assertAlmostEqual(entry["error_pct"], 0.87, places=2)
 
-    def test_export_import_csv(self):
-        self.dataset.load_sample_dataset()
-        initial_len = len(self.dataset.measurements)
-
+    def test_export_csv(self):
+        self.registry.add_measurement(length_cm=20.0, frequency_hz=425.0)
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
             tmp_path = tmp.name
 
         try:
-            self.dataset.export_csv(tmp_path)
-            new_dataset = ExperimentDataset("Imported")
-            new_dataset.import_csv(tmp_path)
-            self.assertEqual(len(new_dataset.measurements), initial_len)
-            self.assertAlmostEqual(new_dataset.measurements[0]["frequency_hz"], self.dataset.measurements[0]["frequency_hz"])
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-    def test_export_import_json(self):
-        self.dataset.load_sample_dataset()
-        initial_len = len(self.dataset.measurements)
-
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-            tmp_path = tmp.name
-
-        try:
-            self.dataset.export_json(tmp_path)
-            new_dataset = ExperimentDataset("Imported JSON")
-            new_dataset.import_json(tmp_path)
-            self.assertEqual(len(new_dataset.measurements), initial_len)
-            self.assertEqual(new_dataset.experiment_name, self.dataset.experiment_name)
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
-
-    def test_export_html_report(self):
-        self.dataset.load_sample_dataset()
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as tmp:
-            tmp_path = tmp.name
-        try:
-            self.dataset.export_html_report(tmp_path)
+            self.registry.export_csv(tmp_path)
             self.assertTrue(os.path.exists(tmp_path))
             with open(tmp_path, "r", encoding="utf-8") as f:
                 content = f.read()
-            self.assertIn("Velocidad Experimental", content)
-            self.assertIn("Grupo 1", content)
+            self.assertIn("340.0", content)
+            self.assertIn("425.0", content)
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
@@ -79,4 +46,3 @@ class TestDataManager(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
