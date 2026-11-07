@@ -1,0 +1,9 @@
+id,timestamp,length_cm,length_m,frequency_hz,v_point_m_s,notes
+1,2026-11-07 10:00:00,12.0,0.12,690.5,356.71,Columna pequeña (12 cm)
+2,2026-11-07 10:05:00,16.0,0.16,523.2,353.94,Nota C5 aprox (16 cm)
+3,2026-11-07 10:10:00,20.0,0.2,422.8,353.71,Ejemplo del documento guia (20 cm)
+4,2026-11-07 10:15:00,25.0,0.25,340.1,352.54,Columna intermedia (25 cm)
+5,2026-11-07 10:20:00,30.0,0.3,284.6,351.93,Columna media (30 cm)
+6,2026-11-07 10:25:00,35.0,0.35,244.7,351.54,Columna larga (35 cm)
+7,2026-11-07 10:30:00,40.0,0.4,214.3,351.13,Columna profunda (40 cm)
+
