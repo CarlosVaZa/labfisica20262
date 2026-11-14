@@ -1,31 +1,61 @@
-# **GRUPO 1 - LABORATORIO DE FÍSICA**
+# Grupo 1 — Laboratorio de Física
 
-## **Medición de la velocidad del sonido mediante resonancia acústica y programación en Python**
+Este proyecto implementa el sistema completo de medición de la velocidad del sonido a través del fenómeno de resonancia acústica en columnas de aire (tubos con agua) utilizando un micrófono, procesamiento de señales con la Transformada Rápida de Fourier (FFT) y una interfaz gráfica visual interactiva en Python.
 
-Este proyecto implementa el sistema completo de medición de la velocidad del sonido a través del fenómeno de **resonancia acústica** en columnas de aire (tubos con agua) utilizando un micrófono, procesamiento de señales con la **Transformada Rápida de Fourier (FFT)** y una **interfaz gráfica visual** interactiva en Python.
+## Interfaz y procedimiento
 
----
+1. **Captura y análisis FFT**: selecciona tubo uniforme o botella y completa sus medidas. Captura audio del micrófono, carga un WAV o ingresa una frecuencia manual.
+2. **Cálculos y gráficas**: revisa fórmula, sustitución, velocidad, frecuencia teórica y error. Pulsa **Registrar esta medición** después de comprobar los datos. Cambiar las dimensiones recalcula la vista, sin modificar mediciones anteriores.
+3. **Tabla de Resultados experimentales**: consulta los dos modelos, elimina filas y exporta a CSV. La tabla tiene desplazamiento vertical y horizontal. El CSV puede abrirse con Excel; no es un archivo `.xlsx`.
 
-### **1. Fórmulas Físicas Implementadas (según el documento del proyecto)**
+## Modelos y unidades
 
-Para un tubo abierto por un extremo y cerrado por el agua en el otro:
+Las longitudes se ingresan en **cm** y los volúmenes en **mL**. Los cálculos usan unidades SI:
 
-1. **Frecuencia Fundamental:**
-   $$f_1 = \frac{v}{4L}$$
+- Longitud en metros = longitud en cm / 100.
+- Volumen en m³ = volumen en mL × 10⁻⁶.
+- Frecuencia en Hz, área en m² y velocidad en m/s.
 
-2. **Despeje de la Velocidad del Sonido:**
-   $$v = 4 \cdot L \cdot f_1$$
+### Tubo uniforme abierto arriba y cerrado por el agua
 
-3. **Ejemplo del Documento:**
-   - Para una columna de aire $L = 20\text{ cm} = 0.20\text{ m}$ y una frecuencia fundamental $f_1 = 425\text{ Hz}$:
-   $$v = 4 \cdot (0.20) \cdot (425) = 340\text{ m/s}$$
-   - Valor teórico del aire a $20^\circ\text{C}$:
-   $$v_{\text{teórico}} \approx 343\text{ m/s}$$
-   - Comparación y cálculo de error:
-   $$\text{Error} = \frac{|v_{\text{experimental}} - 343|}{343} \times 100\%$$
-   $$\text{Precisión} = 100\% - \text{Error}$$
+Mide L desde la superficie del agua hasta la abertura, no la altura total del tubo.
 
----
+Sin diámetro ingresado se conserva el modelo ideal:
+
+$$v = 4Lf_1, \qquad f_1 = \frac{343}{4L}$$
+
+Con diámetro interior D positivo se usa:
+
+$$r = D/2, \quad L_{ef} \approx L + 0.61r, \quad v \approx 4f_1L_{ef}$$
+
+$$f_{teórica} \approx \frac{343}{4(L+0.61r)}$$
+
+La corrección 0.61r es aproximada para una abertura sin reborde.
+Ejemplo ideal: L=20 cm y f=425 Hz dan 340 m/s.
+Con esos mismos datos y D=4 cm: r=0.02 m, Lef=0.2122 m y v=360.74 m/s.
+
+### Botella como resonador de Helmholtz
+
+Ingresa diámetro interior D del cuello, longitud física ℓ del cuello, capacidad del cuerpo y agua añadida.
+La capacidad corresponde a la cavidad **hasta la base del cuello, excluyendo el cuello**;
+no uses automáticamente la capacidad comercial hasta la boca. El agua debe quedar debajo del cuello.
+
+$$V = V_{cuerpo} - V_{agua}, \quad r = D/2, \quad A = \pi r^2$$
+
+$$L_{ef} \approx \ell + 1.46r$$
+
+$$v = 2\pi f_H \sqrt{\frac{VL_{ef}}{A}}$$
+
+$$f_{H,teórica} = \frac{343}{2\pi}\sqrt{\frac{A}{VL_{ef}}}$$
+
+La raíz incluye toda la fracción. La corrección 1.46r es la aproximación adoptada;
+la geometría real de los extremos puede requerir otra corrección. Este modelo supone
+una cavidad y un cuello bien definidos y dimensiones pequeñas frente a la longitud de onda.
+No aplica a cualquier forma de botella ni a la vibración del material al golpearla.
+
+El agua puede ser cero, pero debe ser menor que la capacidad del cuerpo.
+Ejemplo de unidades: D=2.8 cm, ℓ=3.2 cm, cuerpo=600 mL y agua=200 mL
+producen V=0.0004 m³ y Lef=0.05244 m.
 
 ### **2. Herramientas Utilizadas (Sección 5)**
 
@@ -48,6 +78,7 @@ python main.py
 *(O haz doble clic en `iniciar_laboratorio.bat` en Windows).*
 
 #### **¿Qué muestra la Interfaz Gráfica?**
+
 1. **Entrada de la Columna de Aire (L):** Permite ingresar la longitud medida con regla (en cm o metros).
 2. **Captura de Sonido:** Botón para grabar el audio del micrófono durante 1.5 segundos mientras se produce el sonido en el tubo, o cargar un archivo WAV, o ingresar una frecuencia manual.
 3. **Recuadro de Cálculos Físicos en Pantalla:**
@@ -62,20 +93,16 @@ python main.py
 
 ---
 
-#### **Modo Consola (CLI):**
-Si deseas probar directamente desde la terminal con el ejemplo del documento:
-```bash
-python cli.py --length-cm 20.0 --freq-hz 425.0
-```
-O capturando sonido real con el micrófono:
-```bash
-python cli.py --length-cm 20.0 --record
+## Consola y simulaciones
+
+La CLI conserva el modelo ideal de tubo:
+
+```powershell
+.\.venv\Scripts\python.exe cli.py --length-cm 20 --freq-hz 425
 ```
 
----
+## Pruebas
 
-### **4. Pruebas Unitarias**
-Para validar automáticamente que todas las fórmulas físicas, el filtrado y la FFT funcionan con exactitud matemática:
-```bash
-python -m unittest discover tests
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover tests
 ```

@@ -11,9 +11,49 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from core.physics_engine import calculate_speed_of_sound, calculate_theoretical_frequency
+from core.physics_engine import calculate_helmholtz_speed, calculate_helmholtz_frequency
+import math
 
 
 class TestPhysicsEngine(unittest.TestCase):
+
+    def test_tube_diameter_and_inverse(self):
+        # D = 4 cm: r = 0.02 m, L efectiva = 0.2122 m.
+        result = calculate_speed_of_sound(.2, 425, diameter_meters=.04)
+        self.assertAlmostEqual(result["v_experimental"], 360.74)
+        self.assertAlmostEqual(result["effective_length_meters"], .2122)
+        frequency = calculate_theoretical_frequency(.2, diameter_meters=.04)
+        self.assertAlmostEqual(calculate_speed_of_sound(.2, frequency, diameter_meters=.04)["v_experimental"], 343)
+
+    def test_bottle_geometry_and_inverse(self):
+        # Imagen: D=2.8 cm, cuello=3.2 cm, cuerpo=600 mL, agua=200 mL.
+        area = math.pi * .014 ** 2
+        effective = .032 + 1.46 * .014
+        frequency = 343 / (2 * math.pi) * math.sqrt(area / (.0004 * effective))
+        result = calculate_helmholtz_speed(.028, .032, .0006, .0002, frequency)
+        self.assertAlmostEqual(result["air_volume_m3"], .0004)
+        self.assertAlmostEqual(result["effective_length_meters"], .05244)
+        self.assertAlmostEqual(result["area_m2"], area)
+        self.assertAlmostEqual(result["v_experimental"], 343)
+        self.assertAlmostEqual(result["error_porcentual"], 0)
+        self.assertAlmostEqual(calculate_helmholtz_frequency(.028, .032, .0006, .0002), frequency)
+        self.assertGreater(calculate_helmholtz_frequency(.028, .032, .0006, .0003), frequency)
+
+    def test_invalid_inputs(self):
+        for value in (0, -1, float("nan"), float("inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    calculate_speed_of_sound(value, 425)
+                with self.assertRaises(ValueError):
+                    calculate_speed_of_sound(.2, value)
+                with self.assertRaises(ValueError):
+                    calculate_speed_of_sound(.2, 425, diameter_meters=value)
+                with self.assertRaises(ValueError):
+                    calculate_helmholtz_speed(value, .032, .0006, .0002, 425)
+        for water in (-.0001, .0006, .0007, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                calculate_helmholtz_speed(.028, .032, .0006, water, 425)
+        self.assertGreater(calculate_helmholtz_speed(.028, .032, .0006, 0, 425)["v_experimental"], 0)
 
     def test_example_document_exact(self):
         """
