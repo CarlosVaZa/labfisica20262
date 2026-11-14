@@ -29,8 +29,11 @@ class AcousticLabApp(tk.Tk):
         super().__init__()
 
         self.title("PROYECTO GRUPO 1 - LABORATORIO DE FISICA: Medición de la Velocidad del Sonido por Resonancia Acústica")
-        self.geometry("1220x840")
-        self.minsize(1050, 720)
+        # Ajustar la ventana al escritorio, dejando espacio para la barra de tareas.
+        width = min(1180, max(640, self.winfo_screenwidth() - 80))
+        height = min(760, max(480, self.winfo_screenheight() - 120))
+        self.geometry(f"{width}x{height}+20+20")
+        self.minsize(min(760, width), min(480, height))
 
         # Registro de mediciones (inicia vacío sin datos quemados)
         self.registry = ExperimentRegistry()
@@ -45,8 +48,8 @@ class AcousticLabApp(tk.Tk):
 
         self._configure_styles()
         self._build_header()
-        self._build_main_layout()
         self._build_status_bar()
+        self._build_main_layout()
 
     def _configure_styles(self):
         style = ttk.Style(self)
@@ -70,16 +73,16 @@ class AcousticLabApp(tk.Tk):
 
         # Lado izquierdo del encabezado: Títulos
         left_header = tk.Frame(header_frame, bg="#1e3a8a")
-        left_header.pack(side=tk.LEFT, fill=tk.Y, anchor=tk.W)
+        left_header.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, anchor=tk.W)
 
         title_lbl = tk.Label(
             left_header,
             text="PROYECTO GRUPO 1 - LABORATORIO DE FISICA",
-            font=("Segoe UI", 14, "bold"),
+            font=("Segoe UI", 12, "bold"),
             fg="#bfdbfe",
             bg="#1e3a8a"
         )
-        title_lbl.pack(anchor=tk.W)
+        title_lbl.pack(anchor=tk.W, fill=tk.X)
 
         subtitle_lbl = tk.Label(
             left_header,
@@ -88,7 +91,11 @@ class AcousticLabApp(tk.Tk):
             fg="#ffffff",
             bg="#1e3a8a"
         )
-        subtitle_lbl.pack(anchor=tk.W)
+        subtitle_lbl.pack(anchor=tk.W, fill=tk.X)
+        left_header.bind("<Configure>", lambda event: (
+            title_lbl.configure(wraplength=max(180, event.width - 10)),
+            subtitle_lbl.configure(wraplength=max(180, event.width - 10))
+        ))
 
         # Lado derecho del encabezado: Recuadro visualizador de ondas sonoras (Osciloscopio / Transmisor)
         right_header = tk.Frame(header_frame, bg="#1e3a8a")
@@ -136,15 +143,40 @@ class AcousticLabApp(tk.Tk):
     def _build_main_layout(self):
         # Contenedor central dividido en 2 columnas:
         # Columna Izquierda: Entrada de datos, Captura de sonido, y RECUADRO DE CÁLCULOS
-        # Columna Derecha: Gráficas de Matplotlib y Tabla comparativa
-        main_split = ttk.PanedWindow(self, orient=tk.HORIZONTAL)
-        main_split.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Columna derecha: gráficas; los resultados tienen su propia pestaña.
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+        capture_tab = ttk.Frame(self.notebook)
+        results_tab = ttk.Frame(self.notebook, padding=10)
+        self.notebook.add(capture_tab, text="Captura y análisis")
+        self.notebook.add(results_tab, text="Tabla de Resultados experimentales")
+
+        main_split = ttk.PanedWindow(capture_tab, orient=tk.HORIZONTAL)
+        main_split.pack(fill=tk.BOTH, expand=True)
 
         # ---------------------------------------------------------------------
         # PANEL IZQUIERDO: Entradas y Cálculos Físicos
         # ---------------------------------------------------------------------
-        left_panel = ttk.Frame(main_split, padding=8)
-        main_split.add(left_panel, weight=2)
+        left_container = ttk.Frame(main_split)
+        main_split.add(left_container, weight=2)
+        left_canvas = tk.Canvas(left_container, highlightthickness=0, bg="#f1f5f9", width=420)
+        left_scroll = ttk.Scrollbar(left_container, orient=tk.VERTICAL, command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scroll.set)
+        left_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        left_panel = ttk.Frame(left_canvas, padding=8)
+        panel_window = left_canvas.create_window((0, 0), window=left_panel, anchor="nw")
+        left_panel.bind("<Configure>", lambda event: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
+        left_canvas.bind("<Configure>", lambda event: left_canvas.itemconfigure(panel_window, width=event.width))
+        # Desplazar con la rueda cuando el puntero esté sobre los controles.
+        def scroll_controls(event):
+            widget = event.widget
+            while widget is not None:
+                if widget == left_container:
+                    left_canvas.yview_scroll(int(-event.delta / 120), "units")
+                    break
+                widget = getattr(widget, "master", None)
+        self.bind("<MouseWheel>", scroll_controls, add="+")
 
         # 1. Medir la longitud del espacio lleno de aire (Paso 1 y 2 del doc)
         step1_box = ttk.LabelFrame(left_panel, text="  1. Medición de la Columna de Aire (L)  ", padding=10)
@@ -296,7 +328,7 @@ class AcousticLabApp(tk.Tk):
         self.btn_register.pack(fill=tk.X)
 
         # ---------------------------------------------------------------------
-        # PANEL DERECHO: Gráficas de Matplotlib y Tabla de Resultados
+        # PANEL DERECHO: Gráficas de Matplotlib
         # ---------------------------------------------------------------------
         right_panel = ttk.Frame(main_split, padding=8)
         main_split.add(right_panel, weight=3)
@@ -305,10 +337,10 @@ class AcousticLabApp(tk.Tk):
         # Gráfica 1: Espectro FFT con el pico marcado
         # Gráfica 2: Comparativa de Frecuencia vs Nivel de Agua
         self.fig = Figure(figsize=(7, 4.2), dpi=100, facecolor="#f8fafc")
-        self.fig.subplots_adjust(left=0.10, right=0.96, top=0.90, bottom=0.12, wspace=0.25)
+        self.fig.subplots_adjust(left=0.16, right=0.96, top=0.93, bottom=0.10, hspace=0.65)
 
         # Subplot 1: Espectro FFT
-        self.ax_fft = self.fig.add_subplot(1, 2, 1)
+        self.ax_fft = self.fig.add_subplot(2, 1, 1)
         self.ax_fft.set_title("Espectro FFT (Picos de Frecuencia)", fontsize=10, fontweight="bold", color="#1e3a8a")
         self.ax_fft.set_xlabel("Frecuencia (Hz)", fontsize=8)
         self.ax_fft.set_ylabel("Amplitud", fontsize=8)
@@ -320,7 +352,7 @@ class AcousticLabApp(tk.Tk):
         self.ax_fft.legend(loc="upper right", fontsize=8)
 
         # Subplot 2: Comparativa Frecuencia vs Columna de aire L
-        self.ax_comp = self.fig.add_subplot(1, 2, 2)
+        self.ax_comp = self.fig.add_subplot(2, 1, 2)
         self.ax_comp.set_title("Frecuencia vs Nivel de Aire (L)", fontsize=10, fontweight="bold", color="#1e3a8a")
         self.ax_comp.set_xlabel("Longitud L (cm)", fontsize=8)
         self.ax_comp.set_ylabel("Frecuencia f1 (Hz)", fontsize=8)
@@ -333,7 +365,7 @@ class AcousticLabApp(tk.Tk):
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         # 4. Tabla de Resultados y Comparación (Paso 8 y 9 del documento)
-        table_box = ttk.LabelFrame(right_panel, text="  4. Tabla de Resultados Experimentales (Comparar Mediciones)  ", padding=8)
+        table_box = ttk.LabelFrame(results_tab, text="  4. Tabla de Resultados Experimentales (Comparar Mediciones)  ", padding=8)
         table_box.pack(fill=tk.BOTH, expand=True)
 
         cols = ("id", "length_cm", "freq_hz", "formula", "v_calc", "v_theo", "error_pct", "precision_pct")
@@ -347,22 +379,26 @@ class AcousticLabApp(tk.Tk):
         self.tree.heading("error_pct", text="Error (%)")
         self.tree.heading("precision_pct", text="Precisión (%)")
 
-        self.tree.column("id", width=35, anchor=tk.CENTER)
-        self.tree.column("length_cm", width=65, anchor=tk.CENTER)
-        self.tree.column("freq_hz", width=75, anchor=tk.CENTER)
-        self.tree.column("formula", width=95, anchor=tk.CENTER)
-        self.tree.column("v_calc", width=95, anchor=tk.CENTER)
-        self.tree.column("v_theo", width=85, anchor=tk.CENTER)
-        self.tree.column("error_pct", width=75, anchor=tk.CENTER)
-        self.tree.column("precision_pct", width=85, anchor=tk.CENTER)
+        self.tree.column("id", minwidth=35, width=45, anchor=tk.CENTER)
+        self.tree.column("length_cm", minwidth=65, width=80, anchor=tk.CENTER)
+        self.tree.column("freq_hz", minwidth=75, width=90, anchor=tk.CENTER)
+        self.tree.column("formula", minwidth=95, width=110, anchor=tk.CENTER)
+        self.tree.column("v_calc", minwidth=95, width=110, anchor=tk.CENTER)
+        self.tree.column("v_theo", minwidth=85, width=100, anchor=tk.CENTER)
+        self.tree.column("error_pct", minwidth=75, width=90, anchor=tk.CENTER)
+        self.tree.column("precision_pct", minwidth=85, width=100, anchor=tk.CENTER)
 
+        table_box.rowconfigure(0, weight=1)
+        table_box.columnconfigure(0, weight=1)
         tree_scroll = ttk.Scrollbar(table_box, orient=tk.VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=tree_scroll.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        tree_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        tree_scroll_x = ttk.Scrollbar(table_box, orient=tk.HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=tree_scroll.set, xscrollcommand=tree_scroll_x.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        tree_scroll.grid(row=0, column=1, sticky="ns")
+        tree_scroll_x.grid(row=1, column=0, sticky="ew")
 
         # Botones de la tabla
-        tbl_btn_row = ttk.Frame(right_panel)
+        tbl_btn_row = ttk.Frame(results_tab)
         tbl_btn_row.pack(fill=tk.X, pady=(6, 0))
 
         btn_del = ttk.Button(tbl_btn_row, text="🗑️ Eliminar Seleccionado", command=self._delete_selected)
