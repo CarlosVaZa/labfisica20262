@@ -26,7 +26,9 @@ class ExperimentRegistry:
 
     def add_measurement(self, length_cm=None, frequency_hz=None, notes: str = "", *,
                         model="tube", diameter_cm=None, neck_length_cm=None,
-                        body_volume_ml=None, water_volume_ml=None, temperature_celsius=None) -> Dict[str, Any]:
+                        body_volume_ml=None, water_volume_ml=None, temperature_celsius=None,
+                        sample_rate=None, filter_low_cutoff_hz=None, filter_high_cutoff_hz=None,
+                        search_min_hz=None, search_max_hz=None, smoothing_hz=None) -> Dict[str, Any]:
         """
         Calcula y registra el modelo elegido. Entradas en cm, mL y Hz;
         conversiones al SI antes de llamar al motor físico.
@@ -68,6 +70,12 @@ class ExperimentRegistry:
             "v_teorica": round(calc["v_theoretical"], 2),
             "error_pct": round(calc["error_porcentual"], 2),
             "precision_pct": round(calc["precision"], 2),
+            "sample_rate": None if sample_rate is None else int(sample_rate),
+            "filter_low_cutoff_hz": None if filter_low_cutoff_hz is None else float(filter_low_cutoff_hz),
+            "filter_high_cutoff_hz": None if filter_high_cutoff_hz is None else float(filter_high_cutoff_hz),
+            "search_min_hz": None if search_min_hz is None else float(search_min_hz),
+            "search_max_hz": None if search_max_hz is None else float(search_max_hz),
+            "smoothing_hz": None if smoothing_hz is None else float(smoothing_hz),
             "notes": notes
         }
         self.measurements.append(entry)

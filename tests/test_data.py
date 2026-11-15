@@ -91,6 +91,44 @@ class TestDataManager(unittest.TestCase):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    def test_fft_parameters_saved_and_exported(self):
+        """Verifica que los nuevos parámetros FFT se guarden y se exporten al CSV."""
+        entry = self.registry.add_measurement(
+            length_cm=20.0, frequency_hz=425.0,
+            sample_rate=44100, filter_low_cutoff_hz=40.0, filter_high_cutoff_hz=2500.0,
+            search_min_hz=50.0, search_max_hz=2500.0, smoothing_hz=10.0
+        )
+        self.assertEqual(entry["sample_rate"], 44100)
+        self.assertEqual(entry["filter_low_cutoff_hz"], 40.0)
+        self.assertEqual(entry["filter_high_cutoff_hz"], 2500.0)
+        self.assertEqual(entry["search_min_hz"], 50.0)
+        self.assertEqual(entry["search_max_hz"], 2500.0)
+        self.assertEqual(entry["smoothing_hz"], 10.0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "params.csv")
+            self.registry.export_csv(path)
+            with open(path, encoding="utf-8", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(int(rows[0]["sample_rate"]), 44100)
+            self.assertEqual(float(rows[0]["filter_low_cutoff_hz"]), 40.0)
+            self.assertEqual(float(rows[0]["filter_high_cutoff_hz"]), 2500.0)
+            self.assertEqual(float(rows[0]["search_min_hz"]), 50.0)
+            self.assertEqual(float(rows[0]["search_max_hz"]), 2500.0)
+            self.assertEqual(float(rows[0]["smoothing_hz"]), 10.0)
+
+    def test_legacy_measurements_without_fft_params(self):
+        """Registros sin las nuevas claves siguen funcionando correctamente."""
+        legacy = {"id": 1, "model": "tube", "length_cm": 20.0, "frequency_hz": 425.0}
+        self.registry.measurements.append(legacy)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "legacy.csv")
+            self.registry.export_csv(path)
+            with open(path, encoding="utf-8", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(float(rows[0]["frequency_hz"]), 425.0)
+
 
 if __name__ == "__main__":
     unittest.main()

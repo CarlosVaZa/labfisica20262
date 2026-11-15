@@ -44,6 +44,8 @@ class AcousticLabApp(tk.Tk):
         self.current_freq_hz = 0.0
         self.current_calc_result = None
         self.last_audio_data = None
+        self.last_audio_raw = None       # audio sin filtrar, para reanalizar
+        self.last_audio_sr = 44100       # sample rate del último audio
         self.last_freqs = None
         self.last_mags = None
 
@@ -211,7 +213,7 @@ class AcousticLabApp(tk.Tk):
             ttk.Entry(row, textvariable=variable, width=12).pack(side=tk.RIGHT)
         field(geometry, "Temperatura ambiental (°C)", self.var_temperature_celsius)
         field(self.tube_fields, "Longitud de aire L (cm)", self.var_length_cm)
-        field(self.tube_fields, "Diámetro interior D (cm, opcional)", self.var_diameter_cm)
+        field(self.tube_fields, "Diámetro interior D (cm; NO el radio, opcional)", self.var_diameter_cm)
         ttk.Label(self.tube_fields, text="L: desde el agua hasta la abertura.\nD vacío: modelo ideal; con D: corrección 0.61r.", wraplength=340).pack(anchor=tk.W, pady=4)
         field(self.bottle_fields, "Diámetro interior del cuello D (cm)", self.var_neck_diameter_cm)
         field(self.bottle_fields, "Longitud física del cuello ℓ (cm)", self.var_neck_length_cm)
@@ -256,6 +258,32 @@ class AcousticLabApp(tk.Tk):
         self.var_frequency = tk.StringVar(value="Frecuencia: pendiente de captura")
         ttk.Label(audio_box, textvariable=self.var_frequency, wraplength=340, font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=8)
         ttk.Label(audio_box, text="Revise los datos en la pestaña Cálculos y gráficas.", wraplength=340).pack(anchor=tk.W)
+
+        # --- Parámetros editables del filtro y búsqueda FFT ---
+        fft_params_box = ttk.LabelFrame(panel, text="3. Parámetros del filtro y búsqueda FFT", padding=10)
+        fft_params_box.pack(fill=tk.X, pady=(10, 0))
+        self.var_filter_low = tk.StringVar(value="40")
+        self.var_filter_high = tk.StringVar(value="2500")
+        self.var_search_min = tk.StringVar(value="50")
+        self.var_search_max = tk.StringVar(value="2500")
+        self.var_smoothing = tk.StringVar(value="0")
+        for label_text, variable in (
+            ("Corte inferior del filtro (Hz)", self.var_filter_low),
+            ("Corte superior del filtro (Hz)", self.var_filter_high),
+            ("Frecuencia mínima de búsqueda (Hz)", self.var_search_min),
+            ("Frecuencia máxima de búsqueda (Hz)", self.var_search_max),
+            ("Suavizado del espectro (Hz, 0 = sin suavizado)", self.var_smoothing),
+        ):
+            field(fft_params_box, label_text, variable)
+        self.btn_reanalyze = tk.Button(
+            fft_params_box, text="🔄 Reanalizar último audio",
+            command=self._reanalyze_audio, font=("Segoe UI", 9, "bold"),
+            bg="#7c3aed", fg="#ffffff", activebackground="#6d28d9",
+            activeforeground="#ffffff", relief=tk.FLAT, padx=8, pady=8, cursor="hand2"
+        )
+        self.btn_reanalyze.pack(fill=tk.X, pady=(8, 0))
+        for var in (self.var_filter_low, self.var_filter_high, self.var_search_min, self.var_search_max, self.var_smoothing):
+            var.trace_add("write", self._on_fft_param_change)
         fft_panel = ttk.Frame(split, padding=8)
         split.add(fft_panel, weight=3)
         self.fig_fft = Figure(figsize=(6, 4), dpi=100, facecolor="#f8fafc")
@@ -657,11 +685,17 @@ class AcousticLabApp(tk.Tk):
         self.current_freq_hz = 0.0
         self.current_calc_result = None
         self.last_audio_data = None
+        # Note: last_audio_raw and last_audio_sr are NOT cleared here so that
+        # the user can re-analyze with different FFT parameters.
         self.var_frequency.set("Frecuencia: pendiente de captura")
         self.btn_register.config(state=tk.DISABLED)
         self.lbl_resultado_v.config(text="Velocidad experimental: pendiente")
         self.ax_fft.clear()
-        self.ax_fft.set(title="Espectro FFT: sin captura válida", xlabel="Frecuencia (Hz)", ylabel="Amplitud")
+        try:
+            _, _, s_min, s_max, _ = self._get_fft_params()
+        except Exception:
+            s_min, s_max = 50, 2500
+        self.ax_fft.set(title="Espectro FFT: sin captura válida", xlabel="Frecuencia (Hz)", ylabel="Amplitud", xlim=(s_min, s_max))
         self.canvas_fft.draw_idle()
 
     def _input_manual_freq(self):
@@ -680,29 +714,100 @@ class AcousticLabApp(tk.Tk):
         except ValueError as error:
             messagebox.showerror("Frecuencia manual", str(error))
 
+    def _get_fft_params(self):
+        """Lee y valida los parámetros del filtro y búsqueda FFT de la interfaz."""
+        filter_low = self._number(self.var_filter_low)
+        filter_high = self._number(self.var_filter_high)
+        search_min = self._number(self.var_search_min)
+        search_max = self._number(self.var_search_max)
+        smoothing = self._number(self.var_smoothing)
+        if filter_low <= 0 or filter_high <= 0 or search_min <= 0 or search_max <= 0:
+            raise ValueError("Los parámetros de frecuencia deben ser positivos.")
+        if filter_low >= filter_high:
+            raise ValueError("El corte inferior del filtro debe ser menor que el corte superior.")
+        if smoothing < 0:
+            raise ValueError("El suavizado debe ser ≥ 0.")
+        if search_min >= search_max:
+            raise ValueError("La frecuencia mínima debe ser menor que la máxima.")
+        return filter_low, filter_high, search_min, search_max, smoothing
+
     def _process_audio_signal(self, audio, sample_rate=44100):
         self._invalidate_frequency()
         audio = np.asarray(audio)
         if audio.size == 0 or not np.all(np.isfinite(audio)) or np.max(np.abs(audio)) <= 1e-8:
             raise ValueError("El audio está vacío o no contiene una señal válida.")
-        filtered = filter_ambient_noise(audio, sample_rate=sample_rate, low_cutoff=40, high_cutoff=2500)
+        # Guardar audio crudo para poder reanalizar con otros parámetros
+        self.last_audio_raw = audio.copy()
+        self.last_audio_sr = int(sample_rate)
+        self._analyze_with_current_params(audio, sample_rate)
+
+    def _analyze_with_current_params(self, audio, sample_rate):
+        """Filtra, calcula FFT y detecta el pico con los parámetros actuales de la GUI."""
+        try:
+            filter_low, filter_high, search_min, search_max, smoothing = self._get_fft_params()
+        except (ValueError, tk.TclError) as error:
+            raise ValueError(f"Parámetros FFT inválidos: {error}")
+        filtered = filter_ambient_noise(audio, sample_rate=sample_rate,
+                                        low_cutoff=filter_low, high_cutoff=filter_high)
         freqs, mags = analyze_fft(filtered, sample_rate=sample_rate)
-        peak = detect_resonance_frequency(freqs, mags, min_freq=50, max_freq=2500)
+        peak = detect_resonance_frequency(freqs, mags, min_freq=search_min, max_freq=search_max,
+                                          smoothing_hz=smoothing, sample_rate=sample_rate,
+                                          n_samples=len(audio))
         if peak["frequency_hz"] <= 0 or peak["amplitude"] <= 1e-8:
-            raise ValueError("No se encontró un pico entre 50 y 2500 Hz.")
+            raise ValueError(f"No se encontró un pico entre {search_min:.0f} y {search_max:.0f} Hz.")
         self.last_audio_data, self.last_freqs, self.last_mags = audio, freqs, mags
         self.current_freq_hz = peak["frequency_hz"]
-        self.var_frequency.set(f"Pico dominante FFT: {self.current_freq_hz:.2f} Hz")
+        # Indicar si se usó fallback
+        if peak.get("fallback", False):
+            self.var_frequency.set(f"Pico FFT: {self.current_freq_hz:.2f} Hz ⚠ pico no prominente; revise el espectro")
+        else:
+            self.var_frequency.set(f"Pico dominante FFT: {self.current_freq_hz:.2f} Hz")
+        # --- Dibujar espectro con picos prominentes ---
         self.ax_fft.clear()
-        mask = (freqs >= 50) & (freqs <= 2500)
+        mask = (freqs >= search_min) & (freqs <= search_max)
         self.ax_fft.plot(freqs[mask], mags[mask], color="#2563eb")
-        self.ax_fft.plot([self.current_freq_hz], [peak["amplitude"]], "ro", label=f"Pico: {self.current_freq_hz:.2f} Hz")
-        self.ax_fft.set(title="Espectro FFT", xlabel="Frecuencia (Hz)", ylabel="Amplitud", xlim=(50, 2500))
+        self.ax_fft.plot([self.current_freq_hz], [peak["amplitude"]], "ro",
+                         markersize=8, label=f"Pico elegido: {self.current_freq_hz:.2f} Hz")
+        # Marcar los 3 picos más prominentes con otro marcador
+        for i, pp in enumerate(peak.get("prominent_peaks", [])):
+            if abs(pp["frequency_hz"] - self.current_freq_hz) > 0.01:
+                self.ax_fft.plot([pp["frequency_hz"]], [pp["amplitude"]], "g^",
+                                 markersize=7)
+                self.ax_fft.annotate(f'{pp["frequency_hz"]:.1f} Hz',
+                                     (pp["frequency_hz"], pp["amplitude"]),
+                                     textcoords="offset points", xytext=(4, 6),
+                                     fontsize=7, color="#16a34a")
+        self.ax_fft.set(title="Espectro FFT", xlabel="Frecuencia (Hz)", ylabel="Amplitud",
+                        xlim=(search_min, search_max))
         self.ax_fft.grid(alpha=.3)
         self.ax_fft.legend(fontsize=8)
         self.canvas_fft.draw_idle()
         self._on_geometry_change()
         self.set_status("Audio analizado. Revise el modelo y registre la medición en Cálculos y gráficas.")
+
+    def _on_fft_param_change(self, *args):
+        """Reanaliza automáticamente el último audio si los parámetros son válidos."""
+        if self.last_audio_raw is None:
+            return
+        try:
+            self._invalidate_frequency()
+            self._analyze_with_current_params(self.last_audio_raw, self.last_audio_sr)
+        except Exception:
+            # Mientras el usuario escribe puede haber valores incompletos temporalmente
+            pass
+
+    def _reanalyze_audio(self):
+        """Re-procesa el último audio cargado/grabado con los parámetros FFT actuales."""
+        if self.last_audio_raw is None:
+            messagebox.showinfo("Reanalizar", "No hay audio cargado. Capture o cargue un archivo primero.")
+            return
+        try:
+            self._invalidate_frequency()
+            self._analyze_with_current_params(self.last_audio_raw, self.last_audio_sr)
+            self.set_status("Audio reanalizado con los parámetros actuales.")
+        except Exception as e:
+            self._invalidate_frequency()
+            messagebox.showerror("Reanalizar", str(e))
 
     def _compute_and_display(self):
         calc = self._calculate(self.current_freq_hz)
@@ -717,7 +822,21 @@ class AcousticLabApp(tk.Tk):
             if self.current_freq_hz <= 0:
                 raise ValueError("Capture audio o ingrese una frecuencia primero.")
             self._compute_and_display()
-            entry = self.registry.add_measurement(frequency_hz=self.current_freq_hz, **self._geometry_inputs())
+            try:
+                filter_low, filter_high, search_min, search_max, smoothing = self._get_fft_params()
+            except Exception:
+                filter_low = filter_high = search_min = search_max = smoothing = None
+            sr = self.last_audio_sr if self.last_audio_raw is not None else None
+            entry = self.registry.add_measurement(
+                frequency_hz=self.current_freq_hz,
+                sample_rate=sr,
+                filter_low_cutoff_hz=filter_low,
+                filter_high_cutoff_hz=filter_high,
+                search_min_hz=search_min,
+                search_max_hz=search_max,
+                smoothing_hz=smoothing,
+                **self._geometry_inputs()
+            )
             self._refresh_table()
             self._update_comparison_plot()
             children = self.tree.get_children()

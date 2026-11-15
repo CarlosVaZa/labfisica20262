@@ -81,6 +81,8 @@ class StatisticsTab(ttk.Frame):
     def refresh(self, measurements):
         self.measurements = measurements
         bottle = self.var_model.get() == "bottle"
+        model_name = "bottle" if bottle else "tube"
+        model_records = [m for m in measurements if m.get("model") == model_name]
         analysis = (analyze_bottle_measurements if bottle else analyze_tube_measurements)(measurements)
         symbol = "fH" if bottle else "f₁"
         variable = "X" if bottle else "(1/L efectiva)"
@@ -117,15 +119,24 @@ class StatisticsTab(ttk.Frame):
                       ylabel=f"Frecuencia experimental {symbol} (Hz)", title=f"{name}: regresión experimental")
         self.axis.grid(alpha=.3)
         rows, fit = analysis["rows"], analysis["fit"]
+
+        # Resumen de parámetros FFT usados y posible aviso
+        params_summary, params_warning = self._summarize_fft_params(model_records)
+        all_warnings = list(analysis["warnings"])
+        if params_warning:
+            all_warnings.append(params_warning)
+
         self.message.config(text=analysis["message"])
-        self.warning_text.config(text="\n".join(analysis["warnings"]))
+        self.warning_text.config(text="\n".join(all_warnings))
         if rows:
             self.axis.scatter([r["x"] for r in rows], [r["frequency_hz"] for r in rows],
                               color="#2563eb", label="Mediciones registradas")
         if fit is None:
             self.fit_text.config(text="Ajuste pendiente: se necesitan datos válidos con valores X distintos.")
             self.results_text.config(text=f"Mediciones válidas utilizadas: {len(rows)}\n"
-                                     f"{analysis['message']}\nSin resultados globales disponibles.")
+                                     f"{analysis['message']}\n"
+                                     f"{params_summary}\n"
+                                     f"Sin resultados globales disponibles.")
         else:
             x = np.linspace(min(r["x"] for r in rows), max(r["x"] for r in rows), 160)
             self.axis.plot(x, fit["slope"] * x + fit["intercept"], color="#16a34a", label="Ajuste por mínimos cuadrados")
@@ -145,7 +156,44 @@ class StatisticsTab(ttk.Frame):
                 f"Diferencia (global − referencia): {value('difference', 'm/s')}\n"
                 f"Error porcentual global: {value('error_pct', '%')}\n"
                 f"Intervalo de confianza del 95 %: {interval}\n"
-                f"Cantidad de mediciones utilizadas: {fit['n']}"))
+                f"Cantidad de mediciones utilizadas: {fit['n']}\n"
+                f"{params_summary}"))
         if rows:
             self.axis.legend(fontsize=8)
         self.canvas.draw_idle()
+
+    @staticmethod
+    def _summarize_fft_params(records):
+        if not records:
+            return "Parámetros FFT: sin mediciones registradas", None
+        param_sets = set()
+        for r in records:
+            p = (
+                r.get("sample_rate"),
+                r.get("filter_low_cutoff_hz"),
+                r.get("filter_high_cutoff_hz"),
+                r.get("search_min_hz"),
+                r.get("search_max_hz"),
+                r.get("smoothing_hz"),
+            )
+            param_sets.add(p)
+        if len(param_sets) == 1:
+            sr, low, high, min_f, max_f, smooth = next(iter(param_sets))
+            if all(v is None for v in (sr, low, high, min_f, max_f, smooth)):
+                return "Parámetros FFT: no registrados (mediciones previas o manuales)", None
+            parts = []
+            if sr is not None:
+                parts.append(f"fs = {sr} Hz")
+            if low is not None and high is not None:
+                parts.append(f"filtro = [{low:g}, {high:g}] Hz")
+            elif low is not None:
+                parts.append(f"filtro_inf = {low:g} Hz")
+            elif high is not None:
+                parts.append(f"filtro_sup = {high:g} Hz")
+            if min_f is not None and max_f is not None:
+                parts.append(f"búsqueda = [{min_f:g}, {max_f:g}] Hz")
+            if smooth is not None:
+                parts.append(f"suavizado = {smooth:g} Hz")
+            return "Parámetros FFT usados: " + ", ".join(parts), None
+        else:
+            return "Parámetros FFT usados: múltiples configuraciones", "Aviso: Existen mediciones con parámetros de análisis FFT distintos."

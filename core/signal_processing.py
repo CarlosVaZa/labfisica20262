@@ -78,42 +78,82 @@ def detect_resonance_frequency(
     freqs: np.ndarray,
     magnitudes: np.ndarray,
     min_freq: float = 120.0,
-    max_freq: float = 1800.0
+    max_freq: float = 1800.0,
+    smoothing_hz: float = 0.0,
+    sample_rate: int = 0,
+    n_samples: int = 0,
 ) -> Dict[str, float]:
     """
     Detecta automáticamente el pico de resonancia de mayor amplitud dentro del rango útil
     utilizando SciPy (Sección 5 y 8 del documento).
 
+    Parámetros:
+        freqs: Arreglo de frecuencias en Hz.
+        magnitudes: Magnitudes del espectro (sin suavizar).
+        min_freq: Frecuencia mínima de búsqueda (Hz).
+        max_freq: Frecuencia máxima de búsqueda (Hz).
+        smoothing_hz: Ancho de la media móvil en Hz para la detección de picos.
+            0 = sin suavizado (comportamiento original).
+        sample_rate: Frecuencia de muestreo (necesaria si smoothing_hz > 0).
+        n_samples: Número de muestras de la señal (necesaria si smoothing_hz > 0).
+
     Retorna:
-        Diccionario con la frecuencia de resonancia (f1) en Hz y su amplitud.
+        Diccionario con la frecuencia de resonancia (f1) en Hz, su amplitud,
+        los picos prominentes encontrados y si se usó el fallback.
     """
+    empty = {"frequency_hz": 0.0, "amplitude": 0.0, "prominent_peaks": [], "fallback": False}
     if len(freqs) == 0 or len(magnitudes) == 0:
-        return {"frequency_hz": 0.0, "amplitude": 0.0}
+        return empty
 
     # Limitar al rango acústico típico del tubo con agua (120 Hz a 1800 Hz)
     mask = (freqs >= min_freq) & (freqs <= max_freq)
     if not np.any(mask):
-        return {"frequency_hz": 0.0, "amplitude": 0.0}
+        return empty
 
     sub_freqs = freqs[mask]
     sub_mags = magnitudes[mask]
 
-    # Encontrar picos con SciPy
-    prominence = 0.2 * np.max(sub_mags) if np.max(sub_mags) > 0 else 0.01
-    peaks, _ = signal.find_peaks(sub_mags, prominence=prominence)
+    # Suavizado opcional por media móvil para la detección de picos
+    if smoothing_hz > 0 and sample_rate > 0 and n_samples > 0:
+        freq_resolution = sample_rate / n_samples
+        window_bins = max(1, int(round(smoothing_hz / freq_resolution)))
+        if window_bins > 1 and window_bins <= len(sub_mags):
+            kernel = np.ones(window_bins) / window_bins
+            smoothed = np.convolve(sub_mags, kernel, mode="same")
+        else:
+            smoothed = sub_mags
+    else:
+        smoothed = sub_mags
 
+    # Encontrar picos con SciPy (sobre el espectro posiblemente suavizado)
+    prominence = 0.2 * np.max(smoothed) if np.max(smoothed) > 0 else 0.01
+    peaks, properties = signal.find_peaks(smoothed, prominence=prominence)
+
+    fallback = False
     if len(peaks) > 0:
         # Pico más alto
-        best_peak_idx = peaks[np.argmax(sub_mags[peaks])]
+        best_peak_idx = peaks[np.argmax(smoothed[peaks])]
+        # Reportar amplitud del espectro original (no suavizado)
         peak_freq = sub_freqs[best_peak_idx]
-        peak_amp = sub_mags[best_peak_idx]
+        peak_amp = float(sub_mags[best_peak_idx])
+
+        # Los 3 picos más prominentes (por amplitud del suavizado, reportando amplitud original)
+        sorted_peaks = sorted(peaks, key=lambda i: smoothed[i], reverse=True)
+        prominent_peaks = [
+            {"frequency_hz": float(sub_freqs[i]), "amplitude": float(sub_mags[i])}
+            for i in sorted_peaks[:3]
+        ]
     else:
         # Si no supera la prominencia, tomar el valor máximo en el rango
-        best_idx = np.argmax(sub_mags)
+        fallback = True
+        best_idx = np.argmax(smoothed)
         peak_freq = sub_freqs[best_idx]
-        peak_amp = sub_mags[best_idx]
+        peak_amp = float(sub_mags[best_idx])
+        prominent_peaks = [{"frequency_hz": float(peak_freq), "amplitude": peak_amp}]
 
     return {
         "frequency_hz": float(peak_freq),
-        "amplitude": float(peak_amp)
+        "amplitude": peak_amp,
+        "prominent_peaks": prominent_peaks,
+        "fallback": fallback,
     }
