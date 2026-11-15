@@ -8,7 +8,7 @@ Permite almacenar y comparar las diferentes mediciones del experimento (Sección
 from typing import List, Dict, Any, Tuple
 import csv
 import pandas as pd
-from .physics_engine import calculate_speed_of_sound
+from .physics_engine import calculate_speed_of_sound, calculate_helmholtz_speed, calculate_reference_speed
 
 
 class ExperimentRegistry:
@@ -24,19 +24,45 @@ class ExperimentRegistry:
         """Limpia todas las mediciones."""
         self.measurements.clear()
 
-    def add_measurement(self, length_cm: float, frequency_hz: float, notes: str = "") -> Dict[str, Any]:
+    def add_measurement(self, length_cm=None, frequency_hz=None, notes: str = "", *,
+                        model="tube", diameter_cm=None, neck_length_cm=None,
+                        body_volume_ml=None, water_volume_ml=None, temperature_celsius=None) -> Dict[str, Any]:
         """
-        Calcula la velocidad del sonido según la fórmula v = 4 * L * f1
-        y registra el resultado en la tabla.
+        Calcula y registra el modelo elegido. Entradas en cm, mL y Hz;
+        conversiones al SI antes de llamar al motor físico.
         """
-        length_m = length_cm / 100.0
-        calc = calculate_speed_of_sound(length_m, frequency_hz, theoretical_speed=343.0)
+        reference = 343.0 if temperature_celsius is None else calculate_reference_speed(temperature_celsius)
+        if model == "tube":
+            length_m = float(length_cm) / 100.0
+            calc = calculate_speed_of_sound(length_m, frequency_hz, theoretical_speed=reference, diameter_meters=(
+                None if diameter_cm is None else float(diameter_cm) / 100))
+        elif model == "bottle":
+            length_m = None
+            calc = calculate_helmholtz_speed(float(diameter_cm) / 100, float(neck_length_cm) / 100,
+                                            float(body_volume_ml) * 1e-6,
+                                            float(water_volume_ml) * 1e-6, frequency_hz, theoretical_speed=reference)
+        else:
+            raise ValueError("Modelo desconocido: utilice tube o bottle.")
 
         entry = {
             "id": len(self.measurements) + 1,
-            "length_cm": round(length_cm, 2),
-            "length_m": round(length_m, 4),
+            "model": model,
+            "temperature_celsius": None if temperature_celsius is None else float(temperature_celsius),
+            "length_cm": None if length_m is None else float(length_cm),
+            "length_m": length_m,
+            "diameter_cm": diameter_cm,
+            "radius_m": calc["radius_meters"],
+            "effective_length_m": calc["effective_length_meters"],
+            "neck_length_cm": neck_length_cm if model == "bottle" else None,
+            "body_volume_ml": body_volume_ml if model == "bottle" else None,
+            "water_volume_ml": water_volume_ml if model == "bottle" else None,
+            "air_volume_ml": calc.get("air_volume_m3", 0) * 1e6 if model == "bottle" else None,
+            "area_m2": calc.get("area_m2"),
+            "theoretical_frequency_hz": calc["theoretical_frequency_hz"],
             "frequency_hz": round(frequency_hz, 2),
+            # Preserve the existing display/CSV field and retain the original
+            # experimental frequency for statistical calculations without rounding.
+            "frequency_hz_full_precision": float(frequency_hz),
             "formula": calc["formula_text"],
             "v_calculada": round(calc["v_experimental"], 2),
             "v_teorica": round(calc["v_theoretical"], 2),
@@ -59,9 +85,10 @@ class ExperimentRegistry:
 
     def get_data_arrays(self) -> Tuple[List[float], List[float], List[float]]:
         """Retorna listas de (longitudes_cm, frecuencias_hz, velocidades_calculadas)."""
-        lengths = [m["length_cm"] for m in self.measurements]
-        freqs = [m["frequency_hz"] for m in self.measurements]
-        speeds = [m["v_calculada"] for m in self.measurements]
+        tubes = [m for m in self.measurements if m["model"] == "tube"]
+        lengths = [m["length_cm"] for m in tubes]
+        freqs = [m["frequency_hz"] for m in tubes]
+        speeds = [m["v_calculada"] for m in tubes]
         return lengths, freqs, speeds
 
     def export_csv(self, file_path: str) -> None:

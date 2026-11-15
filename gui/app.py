@@ -3,14 +3,13 @@ Interfaz Gráfica Visual - Grupo 1 Lab Física (Tarde)
 ===================================================
 Medición de la velocidad del sonido mediante resonancia acústica y programación en Python
 
-Fórmulas implementadas y mostradas según el documento:
-    f1 = v / (4 * L)
-    v = 4 * L * f1
-    Ejemplo: L = 20 cm = 0.20 m, f1 = 425 Hz -> v = 4 * (0.20) * (425) = 340 m/s
-    Valor teórico a 20 °C = 343 m/s
+Modelos: tubo ideal, tubo con corrección de abertura y botella de Helmholtz.
+Pestañas: captura y FFT, cálculos y gráficas, y resultados experimentales.
+Entradas en cm y mL, cálculos en SI; referencia calculada según la temperatura ambiental.
 """
 
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk, messagebox, filedialog
 import numpy as np
 import matplotlib
@@ -18,10 +17,12 @@ matplotlib.use("TkAgg")
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from core.physics_engine import calculate_speed_of_sound, calculate_theoretical_frequency
+from core.physics_engine import (calculate_speed_of_sound, calculate_theoretical_frequency,
+                                 calculate_helmholtz_speed, calculate_helmholtz_frequency, calculate_reference_speed)
 from core.signal_processing import filter_ambient_noise, analyze_fft, detect_resonance_frequency
 from core.audio_capture import record_microphone, load_audio_wav
 from core.data_manager import ExperimentRegistry
+from gui.statistics_tab import StatisticsTab
 
 
 class AcousticLabApp(tk.Tk):
@@ -140,278 +141,394 @@ class AcousticLabApp(tk.Tk):
         self.is_recording = False
         self._animate_wave_header()
 
+    def _scroll_panel(self, parent, fill_height=False):
+        container = ttk.Frame(parent)
+        container.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(container, bg="#f1f5f9", highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        panel = ttk.Frame(canvas, padding=12)
+        window = canvas.create_window((0, 0), window=panel, anchor="nw")
+        def resize_panel(event=None):
+            if fill_height:
+                canvas.itemconfigure(window, height=max(canvas.winfo_height(), panel.winfo_reqheight()))
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        def resize_canvas(event):
+            canvas.itemconfigure(window, width=event.width)
+            resize_panel()
+        panel.bind("<Configure>", resize_panel)
+        canvas.bind("<Configure>", resize_canvas)
+        def wheel(event):
+            widget = event.widget
+            while widget is not None:
+                if widget == container:
+                    canvas.yview_scroll(int(-event.delta / 120), "units")
+                    break
+                widget = getattr(widget, "master", None)
+        self.bind("<MouseWheel>", wheel, add="+")
+        return panel
+
     def _build_main_layout(self):
-        # Contenedor central dividido en 2 columnas:
-        # Columna Izquierda: Entrada de datos, Captura de sonido, y RECUADRO DE CÁLCULOS
-        # Columna derecha: gráficas; los resultados tienen su propia pestaña.
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
         capture_tab = ttk.Frame(self.notebook)
+        calc_tab = ttk.Frame(self.notebook)
         results_tab = ttk.Frame(self.notebook, padding=10)
-        self.notebook.add(capture_tab, text="Captura y análisis")
+        self.notebook.add(capture_tab, text="Captura y análisis FFT")
+        self.notebook.add(calc_tab, text="Cálculos y gráficas")
         self.notebook.add(results_tab, text="Tabla de Resultados experimentales")
-
-        main_split = ttk.PanedWindow(capture_tab, orient=tk.HORIZONTAL)
-        main_split.pack(fill=tk.BOTH, expand=True)
-
-        # ---------------------------------------------------------------------
-        # PANEL IZQUIERDO: Entradas y Cálculos Físicos
-        # ---------------------------------------------------------------------
-        left_container = ttk.Frame(main_split)
-        main_split.add(left_container, weight=2)
-        left_canvas = tk.Canvas(left_container, highlightthickness=0, bg="#f1f5f9", width=420)
-        left_scroll = ttk.Scrollbar(left_container, orient=tk.VERTICAL, command=left_canvas.yview)
-        left_canvas.configure(yscrollcommand=left_scroll.set)
-        left_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        left_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        left_panel = ttk.Frame(left_canvas, padding=8)
-        panel_window = left_canvas.create_window((0, 0), window=left_panel, anchor="nw")
-        left_panel.bind("<Configure>", lambda event: left_canvas.configure(scrollregion=left_canvas.bbox("all")))
-        left_canvas.bind("<Configure>", lambda event: left_canvas.itemconfigure(panel_window, width=event.width))
-        # Desplazar con la rueda cuando el puntero esté sobre los controles.
-        def scroll_controls(event):
-            widget = event.widget
-            while widget is not None:
-                if widget == left_container:
-                    left_canvas.yview_scroll(int(-event.delta / 120), "units")
-                    break
-                widget = getattr(widget, "master", None)
-        self.bind("<MouseWheel>", scroll_controls, add="+")
-
-        # 1. Medir la longitud del espacio lleno de aire (Paso 1 y 2 del doc)
-        step1_box = ttk.LabelFrame(left_panel, text="  1. Medición de la Columna de Aire (L)  ", padding=10)
-        step1_box.pack(fill=tk.X, pady=(0, 10))
-
-        ttk.Label(
-            step1_box,
-            text="Longitud del espacio que queda lleno de aire (L):",
-            font=("Segoe UI", 9, "bold")
-        ).pack(anchor=tk.W, pady=(0, 2))
-
-        input_row = ttk.Frame(step1_box)
-        input_row.pack(fill=tk.X, pady=(0, 5))
-
-        self.var_length_cm = tk.DoubleVar(value=20.0)
-        self.spin_length = ttk.Spinbox(
-            input_row,
-            from_=2.0,
-            to=150.0,
-            increment=1.0,
-            textvariable=self.var_length_cm,
-            width=10,
-            font=("Segoe UI", 11, "bold"),
-            command=self._on_length_change
-        )
-        self.spin_length.pack(side=tk.LEFT, padx=(0, 8))
-
-        ttk.Label(input_row, text="centímetros (cm)", font=("Segoe UI", 10)).pack(side=tk.LEFT)
-
-        self.lbl_length_m = ttk.Label(step1_box, text="Equivalente en metros: L = 0.200 m", font=("Segoe UI", 9, "italic"), foreground="#475569")
-        self.lbl_length_m.pack(anchor=tk.W)
-
-        # 2. Captura del sonido mediante micrófono y FFT (Paso 3, 4, 5, 6 y 7 del doc)
-        step2_box = ttk.LabelFrame(left_panel, text="  2. Captura de Audio y Análisis por FFT  ", padding=10)
-        step2_box.pack(fill=tk.X, pady=(0, 10))
-
-        desc_audio = "Genere sonido cerca de la abertura del tubo (soplando o con parlante) y capture la señal:"
-        ttk.Label(step2_box, text=desc_audio, wraplength=380, justify=tk.LEFT).pack(anchor=tk.W, pady=(0, 6))
-
-        # Selector de duración de captura
-        dur_row = ttk.Frame(step2_box)
-        dur_row.pack(fill=tk.X, pady=(0, 6))
-
-        ttk.Label(dur_row, text="Tiempo de grabación:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT)
-        self.var_duration = tk.DoubleVar(value=2.0)
-        self.spin_duration = ttk.Spinbox(
-            dur_row,
-            from_=0.5,
-            to=10.0,
-            increment=0.5,
-            textvariable=self.var_duration,
-            width=5,
-            font=("Segoe UI", 9, "bold"),
-            command=self._on_duration_change
-        )
-        self.spin_duration.pack(side=tk.LEFT, padx=(6, 4))
-        self.spin_duration.bind("<KeyRelease>", lambda e: self._on_duration_change())
-        ttk.Label(dur_row, text="segundos").pack(side=tk.LEFT)
-
+        self.statistics_tab = StatisticsTab(self.notebook, self._scroll_panel)
+        self.notebook.add(self.statistics_tab, text="Análisis estadístico")
+        self.notebook.add(self.statistics_tab.results_tab, text="Resultados estadísticos globales")
+        self.statistics_tab.refresh(self.registry.measurements)
+        self.var_temperature_celsius = tk.StringVar(value="20")
+        self.var_model = tk.StringVar(value="tube")
+        self.var_length_cm = tk.StringVar(value="20")
+        self.var_diameter_cm = tk.StringVar(value="")
+        self.var_neck_diameter_cm = tk.StringVar(value="")
+        self.var_neck_length_cm = tk.StringVar(value="")
+        self.var_body_volume_ml = tk.StringVar(value="")
+        self.var_water_volume_ml = tk.StringVar(value="")
+        split = ttk.PanedWindow(capture_tab, orient=tk.HORIZONTAL)
+        split.pack(fill=tk.BOTH, expand=True)
+        controls = ttk.Frame(split, width=390)
+        split.add(controls, weight=2)
+        panel = self._scroll_panel(controls)
+        geometry = ttk.LabelFrame(panel, text="1. Medición del recipiente y del aire", padding=10)
+        geometry.pack(fill=tk.X, pady=(0, 10))
+        selector = ttk.Frame(geometry)
+        selector.pack(fill=tk.X)
+        ttk.Radiobutton(selector, text="Tubo uniforme", variable=self.var_model, value="tube").pack(anchor=tk.W)
+        ttk.Radiobutton(selector, text="Botella (Helmholtz)", variable=self.var_model, value="bottle").pack(anchor=tk.W)
+        self.tube_fields = ttk.Frame(geometry)
+        self.bottle_fields = ttk.Frame(geometry)
+        def field(parent, label, variable):
+            row = ttk.Frame(parent)
+            row.pack(fill=tk.X, pady=4)
+            ttk.Label(row, text=label, wraplength=230).pack(side=tk.LEFT)
+            ttk.Entry(row, textvariable=variable, width=12).pack(side=tk.RIGHT)
+        field(geometry, "Temperatura ambiental (°C)", self.var_temperature_celsius)
+        field(self.tube_fields, "Longitud de aire L (cm)", self.var_length_cm)
+        field(self.tube_fields, "Diámetro interior D (cm, opcional)", self.var_diameter_cm)
+        ttk.Label(self.tube_fields, text="L: desde el agua hasta la abertura.\nD vacío: modelo ideal; con D: corrección 0.61r.", wraplength=340).pack(anchor=tk.W, pady=4)
+        field(self.bottle_fields, "Diámetro interior del cuello D (cm)", self.var_neck_diameter_cm)
+        field(self.bottle_fields, "Longitud física del cuello ℓ (cm)", self.var_neck_length_cm)
+        field(self.bottle_fields, "Volumen del cuerpo (mL)", self.var_body_volume_ml)
+        field(self.bottle_fields, "Volumen de agua (mL)", self.var_water_volume_ml)
+        ttk.Label(self.bottle_fields, text="Vaire = Vcuerpo − Vagua  (mL)",
+                  font=("Segoe UI", 9, "italic"), foreground="#475569",
+                  wraplength=340).pack(anchor=tk.W, pady=(0, 4))
+        self.lbl_length_m = ttk.Label(geometry, wraplength=340, foreground="#475569")
+        self.lbl_length_m.pack(anchor=tk.W, pady=6)
+        self.btn_measurement_guide = ttk.Button(panel, text="Cómo medir el tubo uniforme y obtener sus fórmulas",
+                                               command=self._open_measurement_guide)
+        self.btn_measurement_guide.pack(fill=tk.X, pady=(0, 10))
+        audio_box = ttk.LabelFrame(panel, text="2. Captura de audio y análisis por FFT", padding=10)
+        audio_box.pack(fill=tk.X)
+        ttk.Label(audio_box, text="Genere sonido cerca de la abertura del tubo (soplando o con parlante) y capture la señal.", wraplength=340).pack(anchor=tk.W)
+        self.var_duration = tk.StringVar(value="2.0")
+        ttk.Label(audio_box, text="Duración (0.5–10 segundos)").pack(anchor=tk.W, pady=(8, 0))
+        ttk.Spinbox(audio_box, from_=0.5, to=10, increment=0.5, textvariable=self.var_duration, width=10).pack(anchor=tk.W)
         self.btn_record = tk.Button(
-            step2_box,
-            text="🎙️ CAPTURAR SONIDO CON MICRÓFONO (2.0 s)",
-            bg="#2563eb",
-            fg="#ffffff",
-            font=("Segoe UI", 10, "bold"),
-            relief=tk.FLAT,
-            padx=12,
-            pady=8,
-            cursor="hand2",
-            command=self._capture_sound
+            audio_box, text="🎙  CAPTURAR SONIDO CON MICRÓFONO (2.0 s)",
+            command=self._capture_sound, bg="#2563eb", fg="#ffffff",
+            activebackground="#1d4ed8", activeforeground="#ffffff",
+            disabledforeground="#ffffff", font=("Segoe UI", 10, "bold"),
+            relief=tk.FLAT, padx=12, pady=12, cursor="hand2"
         )
-        self.btn_record.pack(fill=tk.X, pady=(0, 6))
+        self.btn_record.pack(fill=tk.X, pady=(8, 6))
+        self.btn_record.bind("<Configure>", lambda event: self.btn_record.configure(wraplength=max(120, event.width - 24)))
+        manual_row = ttk.Frame(audio_box)
+        manual_row.pack(fill=tk.X)
+        manual_row.columnconfigure((0, 1), weight=1, uniform="audio_buttons")
+        for column, text, command in (
+            (0, "📂 Cargar Audio WAV...", self._load_wav_file),
+            (1, "▣ Ingresar Frecuencia Manual...", self._input_manual_freq),
+        ):
+            button = tk.Button(manual_row, text=text, command=command,
+                               font=("Segoe UI", 9), bg="#f1f5f9", fg="#0f172a",
+                               relief=tk.GROOVE, bd=2, padx=5, pady=7, cursor="hand2")
+            button.grid(row=0, column=column, sticky="nsew", padx=(0, 4) if column == 0 else (4, 0))
+            button.bind("<Configure>", lambda event, control=button: control.configure(wraplength=max(70, event.width - 14)))
+        self.var_duration.trace_add("write", self._update_record_button)
+        self.var_frequency = tk.StringVar(value="Frecuencia: pendiente de captura")
+        ttk.Label(audio_box, textvariable=self.var_frequency, wraplength=340, font=("Segoe UI", 10, "bold")).pack(anchor=tk.W, pady=8)
+        ttk.Label(audio_box, text="Revise los datos en la pestaña Cálculos y gráficas.", wraplength=340).pack(anchor=tk.W)
+        fft_panel = ttk.Frame(split, padding=8)
+        split.add(fft_panel, weight=3)
+        self.fig_fft = Figure(figsize=(6, 4), dpi=100, facecolor="#f8fafc")
+        self.ax_fft = self.fig_fft.add_subplot(111)
+        self.fig_fft.subplots_adjust(left=.15, right=.96, bottom=.16, top=.90)
+        self.ax_fft.set(title="Espectro FFT", xlabel="Frecuencia (Hz)", ylabel="Amplitud", xlim=(50, 2500))
+        self.ax_fft.grid(alpha=.3)
+        self.canvas_fft = FigureCanvasTkAgg(self.fig_fft, master=fft_panel)
+        self.canvas_fft.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # Opción manual o archivo WAV
-        manual_row = ttk.Frame(step2_box)
-        manual_row.pack(fill=tk.X, pady=(2, 0))
-
-        btn_wav = ttk.Button(manual_row, text="📂 Cargar Audio WAV...", command=self._load_wav_file)
-        btn_wav.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 4))
-
-        btn_manual = ttk.Button(manual_row, text="⌨️ Ingresar Frecuencia Manual...", command=self._input_manual_freq)
-        btn_manual.pack(side=tk.RIGHT, expand=True, fill=tk.X, padx=(4, 0))
-
-        # ---------------------------------------------------------------------
-        # 3. RECUADRO DE CÁLCULOS FÍSICOS (MOSTRANDO LAS FÓRMULAS DEL DOCUMENTO)
-        # ---------------------------------------------------------------------
-        calc_box = ttk.LabelFrame(left_panel, text="  3. Cálculos de la Velocidad del Sonido (Fórmulas de Física)  ", padding=10)
-        calc_box.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
-
-        # Banner de fórmulas del documento
-        formula_bar = tk.Frame(calc_box, bg="#eff6ff", bd=1, relief=tk.SOLID, padx=8, pady=5)
-        formula_bar.pack(fill=tk.X, pady=(0, 6))
-
-        tk.Label(
-            formula_bar,
-            text="f₁ = v / (4 · L)    ➔    v = 4 · L · f₁",
-            font=("Cambria Math", 11, "bold"),
-            fg="#1e40af",
-            bg="#eff6ff"
-        ).pack(anchor=tk.CENTER)
-
-        # Tarjeta con la sustitución numérica de los datos obtenidos
-        self.calc_card = tk.Frame(calc_box, bg="#ffffff", bd=1, relief=tk.SOLID, padx=10, pady=8)
-        self.calc_card.pack(fill=tk.X, pady=(0, 6))
-
-        self.lbl_sustitucion = tk.Label(
-            self.calc_card,
-            text="v = 4 · (L) · (f₁)",
-            font=("Segoe UI", 10, "bold"),
-            fg="#0f172a",
-            bg="#ffffff"
-        )
-        self.lbl_sustitucion.pack(anchor=tk.W, pady=(0, 2))
-
-        self.lbl_resultado_v = tk.Label(
-            self.calc_card,
-            text="Velocidad Experimental: v = -- m/s",
-            font=("Segoe UI", 13, "bold"),
-            fg="#2563eb",
-            bg="#ffffff"
-        )
-        self.lbl_resultado_v.pack(anchor=tk.W, pady=(0, 4))
-
-        # Comparación con valor teórico a 20 °C (343 m/s)
-        self.lbl_comparacion = tk.Label(
-            self.calc_card,
-            text="Valor teórico a 20 °C: 343.0 m/s\nError porcentual: -- %  |  Precisión: -- %",
-            font=("Segoe UI", 9),
-            justify=tk.LEFT,
-            fg="#334155",
-            bg="#ffffff"
-        )
-        self.lbl_comparacion.pack(anchor=tk.W)
-
-        # Botón para registrar medición en la tabla
+        calc_tab.rowconfigure(0, weight=1)
+        calc_tab.columnconfigure(0, weight=1, uniform="calc_columns")
+        calc_tab.columnconfigure(1, weight=2, uniform="calc_columns")
+        calc_left = ttk.Frame(calc_tab, width=1, height=1)
+        calc_left.grid(row=0, column=0, sticky="nsew")
+        calc_left.pack_propagate(False)
+        calc_right = ttk.Frame(calc_tab, padding=8, width=1, height=1)
+        calc_right.grid(row=0, column=1, sticky="nsew")
+        calc_right.pack_propagate(False)
+        calc_footer = ttk.Frame(calc_left, padding=(12, 8, 28, 12))
+        calc_footer.pack(side=tk.BOTTOM, fill=tk.X)
+        calc_panel = self._scroll_panel(calc_left, fill_height=True)
+        calc_box = ttk.LabelFrame(calc_panel, text="3. Cálculos de la velocidad del sonido", padding=12)
+        calc_box.pack(fill=tk.BOTH, expand=True)
+        def wrap_calculations(event):
+            for widget in calc_box.winfo_children():
+                if isinstance(widget, ttk.Label):
+                    widget.configure(wraplength=max(100, event.width - 28))
+        calc_box.bind("<Configure>", wrap_calculations)
+        formula_frame = tk.Frame(calc_box, bg="#eff6ff", highlightbackground="#334155",
+                                 highlightthickness=1, height=150)
+        formula_frame.pack(fill=tk.X, pady=(0, 12))
+        formula_frame.pack_propagate(False)
+        self.formula_figure = Figure(figsize=(3, 1.5), dpi=100, facecolor="#eff6ff")
+        self.formula_canvas = FigureCanvasTkAgg(self.formula_figure, master=formula_frame)
+        self.formula_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.formula_canvas.get_tk_widget().bind("<Configure>",
+            lambda event: self._fit_formula_canvas(self.formula_canvas), add="+")
+        self.lbl_sustitucion = ttk.Label(calc_box, text="Capture audio o ingrese una frecuencia.", wraplength=700,
+                                        font=("Segoe UI", 10, "bold"))
+        self.lbl_sustitucion.pack(anchor=tk.W, pady=4)
+        self.lbl_resultado_v = ttk.Label(calc_box, text="Velocidad experimental: pendiente", font=("Segoe UI", 13, "bold"), foreground="#2563eb")
+        self.lbl_resultado_v.pack(anchor=tk.W, pady=4)
+        self.lbl_comparacion = ttk.Label(calc_box, wraplength=700,
+            text="")
+        self.lbl_comparacion.pack(anchor=tk.W, pady=4)
+        self.lbl_theory_title = ttk.Label(calc_box, wraplength=700, font=("Segoe UI", 10, "bold"))
+        self.lbl_theory_title.pack(anchor=tk.W, pady=(12, 4))
+        self.lbl_theory_formula = ttk.Label(calc_box, wraplength=300,
+                                            font=("Segoe UI", 10, "italic"), foreground="#0f172a")
+        self.lbl_theory_formula.pack(anchor=tk.W, pady=(0, 8))
         self.btn_register = tk.Button(
-            calc_box,
-            text="➕ REGISTRAR ESTA MEDICIÓN EN LA TABLA",
-            bg="#16a34a",
-            fg="#ffffff",
-            font=("Segoe UI", 10, "bold"),
-            relief=tk.FLAT,
-            padx=10,
-            pady=7,
-            cursor="hand2",
-            state=tk.DISABLED,
-            command=self._register_measurement
-        )
+            calc_footer, text="Registrar esta medición", state=tk.DISABLED,
+            command=self._register_measurement, bg="#16a34a", fg="#ffffff",
+            activebackground="#15803d", activeforeground="#ffffff",
+            disabledforeground="#ffffff", font=("Segoe UI", 11, "bold"),
+            relief=tk.FLAT, padx=12, pady=18, cursor="hand2")
         self.btn_register.pack(fill=tk.X)
+        self.fig = Figure(figsize=(8, 5.2), dpi=100, facecolor="#f8fafc")
+        self.fig.subplots_adjust(left=.13, right=.96, top=.92, bottom=.12, hspace=.65)
+        self.ax_comp = self.fig.add_subplot(211)
+        self.ax_speed = self.fig.add_subplot(212)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=calc_right)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        # ---------------------------------------------------------------------
-        # PANEL DERECHO: Gráficas de Matplotlib
-        # ---------------------------------------------------------------------
-        right_panel = ttk.Frame(main_split, padding=8)
-        main_split.add(right_panel, weight=3)
-
-        # Figura de Matplotlib con 2 subgráficas:
-        # Gráfica 1: Espectro FFT con el pico marcado
-        # Gráfica 2: Comparativa de Frecuencia vs Nivel de Agua
-        self.fig = Figure(figsize=(7, 4.2), dpi=100, facecolor="#f8fafc")
-        self.fig.subplots_adjust(left=0.16, right=0.96, top=0.93, bottom=0.10, hspace=0.65)
-
-        # Subplot 1: Espectro FFT
-        self.ax_fft = self.fig.add_subplot(2, 1, 1)
-        self.ax_fft.set_title("Espectro FFT (Picos de Frecuencia)", fontsize=10, fontweight="bold", color="#1e3a8a")
-        self.ax_fft.set_xlabel("Frecuencia (Hz)", fontsize=8)
-        self.ax_fft.set_ylabel("Amplitud", fontsize=8)
-        self.ax_fft.set_xlim(100, 1500)
-        self.ax_fft.set_ylim(0, 1)
-        self.ax_fft.grid(True, linestyle="--", alpha=0.4)
-        self.line_fft, = self.ax_fft.plot([], [], color="#2563eb", lw=1.5, label="Espectro FFT")
-        self.peak_marker, = self.ax_fft.plot([], [], "ro", markersize=8, label="Pico f1")
-        self.ax_fft.legend(loc="upper right", fontsize=8)
-
-        # Subplot 2: Comparativa Frecuencia vs Columna de aire L
-        self.ax_comp = self.fig.add_subplot(2, 1, 2)
-        self.ax_comp.set_title("Frecuencia vs Nivel de Aire (L)", fontsize=10, fontweight="bold", color="#1e3a8a")
-        self.ax_comp.set_xlabel("Longitud L (cm)", fontsize=8)
-        self.ax_comp.set_ylabel("Frecuencia f1 (Hz)", fontsize=8)
-        self.ax_comp.grid(True, linestyle="--", alpha=0.4)
-        self.line_theo_comp, = self.ax_comp.plot([], [], "g--", lw=1.5, label="Teórico (343/4L)")
-        self.scatter_comp, = self.ax_comp.plot([], [], "bs", markersize=7, label="Mediciones")
-        self.ax_comp.legend(loc="upper right", fontsize=8)
-
-        self.canvas = FigureCanvasTkAgg(self.fig, master=right_panel)
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True, pady=(0, 10))
-
-        # 4. Tabla de Resultados y Comparación (Paso 8 y 9 del documento)
-        table_box = ttk.LabelFrame(results_tab, text="  4. Tabla de Resultados Experimentales (Comparar Mediciones)  ", padding=8)
+        table_box = ttk.LabelFrame(results_tab, text="4. Resultados experimentales", padding=8)
         table_box.pack(fill=tk.BOTH, expand=True)
-
-        cols = ("id", "length_cm", "freq_hz", "formula", "v_calc", "v_theo", "error_pct", "precision_pct")
-        self.tree = ttk.Treeview(table_box, columns=cols, show="headings", height=6)
-        self.tree.heading("id", text="#")
-        self.tree.heading("length_cm", text="L (cm)")
-        self.tree.heading("freq_hz", text="f1 (Hz)")
-        self.tree.heading("formula", text="Fórmula")
-        self.tree.heading("v_calc", text="v exp (m/s)")
-        self.tree.heading("v_theo", text="v teo (m/s)")
-        self.tree.heading("error_pct", text="Error (%)")
-        self.tree.heading("precision_pct", text="Precisión (%)")
-
-        self.tree.column("id", minwidth=35, width=45, anchor=tk.CENTER)
-        self.tree.column("length_cm", minwidth=65, width=80, anchor=tk.CENTER)
-        self.tree.column("freq_hz", minwidth=75, width=90, anchor=tk.CENTER)
-        self.tree.column("formula", minwidth=95, width=110, anchor=tk.CENTER)
-        self.tree.column("v_calc", minwidth=95, width=110, anchor=tk.CENTER)
-        self.tree.column("v_theo", minwidth=85, width=100, anchor=tk.CENTER)
-        self.tree.column("error_pct", minwidth=75, width=90, anchor=tk.CENTER)
-        self.tree.column("precision_pct", minwidth=85, width=100, anchor=tk.CENTER)
-
+        columns = {"id": "#", "model": "Modelo", "length_cm": "L (cm)", "diameter_cm": "D (cm)",
+                   "frequency_hz": "f medida (Hz)", "theoretical_frequency_hz": "f teórica (Hz)",
+                   "formula": "Fórmula", "v_calculada": "v exp (m/s)", "error_pct": "Error (%)",
+                   "neck_length_cm": "ℓ cuello (cm)", "body_volume_ml": "Cuerpo (mL)",
+                   "water_volume_ml": "Agua (mL)", "air_volume_ml": "Aire (mL)",
+                   "temperature_celsius": "T (°C)", "v_teorica": "v teórica (m/s)"}
+        self.table_columns = list(columns)
+        self.tree = ttk.Treeview(table_box, columns=self.table_columns, show="headings", height=10)
+        for key, label in columns.items():
+            self.tree.heading(key, text=label)
+            self.tree.column(key, width=260 if key == "formula" else 110, minwidth=60, stretch=False)
         table_box.rowconfigure(0, weight=1)
         table_box.columnconfigure(0, weight=1)
-        tree_scroll = ttk.Scrollbar(table_box, orient=tk.VERTICAL, command=self.tree.yview)
-        tree_scroll_x = ttk.Scrollbar(table_box, orient=tk.HORIZONTAL, command=self.tree.xview)
-        self.tree.configure(yscrollcommand=tree_scroll.set, xscrollcommand=tree_scroll_x.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
-        tree_scroll.grid(row=0, column=1, sticky="ns")
-        tree_scroll_x.grid(row=1, column=0, sticky="ew")
+        sy = ttk.Scrollbar(table_box, orient=tk.VERTICAL, command=self.tree.yview)
+        sx = ttk.Scrollbar(table_box, orient=tk.HORIZONTAL, command=self.tree.xview)
+        sy.grid(row=0, column=1, sticky="ns")
+        sx.grid(row=1, column=0, sticky="ew")
+        self.tree.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        buttons = ttk.Frame(results_tab)
+        buttons.pack(fill=tk.X, pady=8)
+        ttk.Button(buttons, text="Eliminar seleccionado", command=self._delete_selected).pack(side=tk.LEFT, padx=4)
+        ttk.Button(buttons, text="Limpiar tabla", command=self._clear_table).pack(side=tk.LEFT, padx=4)
+        ttk.Button(buttons, text="Exportar CSV", command=self._export_csv).pack(side=tk.RIGHT, padx=4)
+        for variable in (self.var_temperature_celsius, self.var_model, self.var_length_cm, self.var_diameter_cm, self.var_neck_diameter_cm,
+                         self.var_neck_length_cm, self.var_body_volume_ml, self.var_water_volume_ml):
+            variable.trace_add("write", self._on_geometry_change)
+        self._on_geometry_change()
 
-        # Botones de la tabla
-        tbl_btn_row = ttk.Frame(results_tab)
-        tbl_btn_row.pack(fill=tk.X, pady=(6, 0))
+    @staticmethod
+    def _number(variable):
+        value = float(variable.get().strip().replace(",", "."))
+        if not np.isfinite(value):
+            raise ValueError("Ingrese valores numéricos finitos.")
+        return value
 
-        btn_del = ttk.Button(tbl_btn_row, text="🗑️ Eliminar Seleccionado", command=self._delete_selected)
-        btn_del.pack(side=tk.LEFT, padx=(0, 6))
+    def _geometry_inputs(self):
+        temperature = self._number(self.var_temperature_celsius)
+        calculate_reference_speed(temperature)
+        if self.var_model.get() == "tube":
+            return dict(model="tube", temperature_celsius=temperature, length_cm=self._number(self.var_length_cm),
+                        diameter_cm=None if not self.var_diameter_cm.get().strip() else self._number(self.var_diameter_cm))
+        return dict(model="bottle", temperature_celsius=temperature, diameter_cm=self._number(self.var_neck_diameter_cm),
+                    neck_length_cm=self._number(self.var_neck_length_cm),
+                    body_volume_ml=self._number(self.var_body_volume_ml),
+                    water_volume_ml=self._number(self.var_water_volume_ml))
 
-        btn_clr = ttk.Button(tbl_btn_row, text="🧹 Limpiar Tabla", command=self._clear_table)
-        btn_clr.pack(side=tk.LEFT, padx=(0, 6))
+    def _calculate(self, frequency):
+        inputs = self._geometry_inputs()
+        reference = calculate_reference_speed(inputs["temperature_celsius"])
+        if inputs["model"] == "tube":
+            return calculate_speed_of_sound(inputs["length_cm"] / 100, frequency, theoretical_speed=reference,
+                diameter_meters=None if inputs["diameter_cm"] is None else inputs["diameter_cm"] / 100)
+        return calculate_helmholtz_speed(inputs["diameter_cm"] / 100, inputs["neck_length_cm"] / 100,
+            inputs["body_volume_ml"] * 1e-6, inputs["water_volume_ml"] * 1e-6, frequency, theoretical_speed=reference)
 
-        btn_csv = ttk.Button(tbl_btn_row, text="💾 Exportar a CSV / Excel", command=self._export_csv)
-        btn_csv.pack(side=tk.RIGHT)
-
-        # Inicializar gráfica comparativa con curva teórica
+    def _on_geometry_change(self, *args):
+        self.btn_measurement_guide.config(text=("Cómo medir la botella y obtener sus fórmulas"
+            if self.var_model.get() == "bottle" else "Cómo medir el tubo uniforme y obtener sus fórmulas"))
+        self.tube_fields.pack_forget()
+        self.bottle_fields.pack_forget()
+        fields = self.tube_fields if self.var_model.get() == "tube" else self.bottle_fields
+        fields.pack(fill=tk.X, before=self.lbl_length_m)
+        self.current_calc_result = None
+        self.btn_register.config(state=tk.DISABLED)
+        self.lbl_resultado_v.config(text="Velocidad experimental: pendiente")
+        self._update_theory_explanation()
+        try:
+            preview = self._calculate(1.0)
+            if preview["model"] == "tube":
+                self.lbl_length_m.config(text=f"L = {preview['length_meters']:.6g} m; r = {preview['radius_meters']:.6g} m")
+            else:
+                self.lbl_length_m.config(text=f"V aire = {preview['air_volume_m3'] * 1e6:.6g} mL = {preview['air_volume_m3']:.6g} m³")
+            self.lbl_sustitucion.config(text="Capture audio o ingrese una frecuencia.")
+            if self.current_freq_hz > 0:
+                self._compute_and_display()
+        except (ValueError, TypeError, tk.TclError) as error:
+            self.lbl_length_m.config(text="Complete las medidas del recipiente.")
+            self.lbl_sustitucion.config(text="Datos incompletos o invalidos.")
         self._update_comparison_plot()
+
+    def _fit_formula_canvas(self, canvas):
+        # MathText keeps subscripts and fractions together; shrink whole equations
+        # to the available width instead of breaking them between lines.
+        figure = canvas.figure
+        for text in figure.texts:
+            text.set_fontsize(12)
+        canvas.draw()
+        renderer = canvas.get_renderer()
+        available = max(1, figure.bbox.width - 20)
+        for text in figure.texts:
+            width = text.get_window_extent(renderer).width
+            if width > available:
+                text.set_fontsize(12 * available / width)
+        canvas.draw_idle()
+
+    def _set_formula_lines(self, canvas, lines):
+        figure = canvas.figure
+        figure.clear()
+        for index, line in enumerate(lines):
+            figure.text(.5, 1 - (index + .5) / len(lines), line,
+                        ha="center", va="center", color="#1e40af", fontsize=12)
+        self._fit_formula_canvas(canvas)
+
+    def _update_theory_explanation(self):
+        if self.var_model.get() == "bottle":
+            name = "Botella"
+            speed_lines = [r"$v = 2\pi \cdot f_H \cdot \sqrt{\frac{V_{\mathrm{aire}} \cdot L_{\mathrm{ef}}}{A}}$"]
+            frequency = "fₕ = (v teórica / 2π) × √[A / (Vaire × Lef)]"
+        else:
+            speed_lines = [
+                r"$f_1 = v / (4 \cdot L)\quad\Rightarrow\quad v = 4\cdot L\cdot f_1$",
+                r"$v \approx 4\cdot f_1\cdot (L + 0.61\cdot r)$",
+            ]
+            if self.var_diameter_cm.get().strip():
+                name = "Tubo con corrección del radio"
+                frequency = "f₁ ≈ v teórica / [4 × (L + 0.61 × r)]"
+            else:
+                name = "Tubo ideal"
+                frequency = "f₁ = v teórica / (4 × L)"
+        self.lbl_theory_title.config(text=f"Frecuencia Teórica del modelo ({name})")
+        self._set_formula_lines(self.formula_canvas, speed_lines)
+        try:
+            temperature = self._number(self.var_temperature_celsius)
+            reference = calculate_reference_speed(temperature)
+            comparison = ("Velocidad teórica del sonido en el aire:\n"
+                          "v teórica = 331.3 + 0.606 × T\n"
+                          f"v teórica = 331.3 + 0.606 × ({temperature:g}) = {reference:.2f} m/s\n"
+                          "T: temperatura ambiental en °C.")
+            if self.current_calc_result is not None:
+                comparison += f"\nError experimental: {self.current_calc_result['error_porcentual']:.2f} %"
+            self.lbl_comparacion.config(text=comparison)
+            preview = self._calculate(1.0)
+            if preview["model"] == "bottle":
+                substitution = (f"fₕ = ({reference:.2f} / 2π) × √["
+                                f"{preview['area_m2']:.6g} / ({preview['air_volume_m3']:.6g} × "
+                                f"{preview['effective_length_meters']:.6g})]")
+            else:
+                substitution = f"f₁ = {reference:.2f} / (4 × {preview['effective_length_meters']:.6g})"
+            frequency += f"\n{substitution}\nf teórica = {preview['theoretical_frequency_hz']:.2f} Hz"
+        except (ValueError, TypeError, tk.TclError):
+            # Do not retain a previous theoretical result for invalid inputs.
+            try:
+                calculate_reference_speed(self._number(self.var_temperature_celsius))
+            except (ValueError, TypeError, tk.TclError):
+                self.lbl_comparacion.config(text="v teórica = 331.3 + 0.606 × T\nIngrese una temperatura ambiental válida (°C).")
+            frequency += "\nComplete los datos para calcular la frecuencia teórica."
+        self.lbl_theory_formula.config(text=frequency)
+
+    def _open_measurement_guide(self):
+        from PIL import Image, ImageTk
+        model = self.var_model.get()
+        filename = ("Guía visual de resonancia de Helmholtz.png" if model == "bottle"
+                    else "Guia visual del tubo uniforme.png")
+        path = Path(__file__).resolve().parent.parent / "imagenes" / filename
+        try:
+            with Image.open(path) as source:
+                original = source.convert("RGB")
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Guía de medición", f"No se pudo abrir la guía {filename}: {error}", parent=self)
+            return
+        viewer = tk.Toplevel(self)
+        viewer.title("Cómo medir: " + ("Botella" if model == "bottle" else "Tubo uniforme"))
+        width = min(1200, max(600, self.winfo_screenwidth() - 100))
+        height = min(850, max(400, self.winfo_screenheight() - 120))
+        viewer.geometry(f"{width}x{height}")
+        toolbar = ttk.Frame(viewer, padding=8)
+        toolbar.pack(fill=tk.X)
+        area = ttk.Frame(viewer)
+        area.pack(fill=tk.BOTH, expand=True)
+        area.rowconfigure(0, weight=1)
+        area.columnconfigure(0, weight=1)
+        canvas = tk.Canvas(area, bg="#e2e8f0", highlightthickness=0)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        sy = ttk.Scrollbar(area, orient=tk.VERTICAL, command=canvas.yview)
+        sx = ttk.Scrollbar(area, orient=tk.HORIZONTAL, command=canvas.xview)
+        sy.grid(row=0, column=1, sticky="ns")
+        sx.grid(row=1, column=0, sticky="ew")
+        canvas.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        item = canvas.create_image(0, 0, anchor="nw")
+        state = {"fit": True, "scale": 1.0}
+        def render(event=None):
+            if state["fit"]:
+                state["scale"] = min(canvas.winfo_width() / original.width,
+                                     canvas.winfo_height() / original.height, 1.0)
+            size = (max(1, round(original.width * state["scale"])),
+                    max(1, round(original.height * state["scale"])))
+            photo = ImageTk.PhotoImage(original.resize(size, Image.Resampling.LANCZOS), master=viewer)
+            canvas.image = photo
+            canvas.itemconfigure(item, image=photo)
+            canvas.configure(scrollregion=(0, 0, *size))
+        def zoom(factor):
+            state["fit"] = False
+            state["scale"] = min(3.0, max(.1, state["scale"] * factor))
+            render()
+        def fit():
+            state["fit"] = True
+            render()
+            canvas.xview_moveto(0)
+            canvas.yview_moveto(0)
+        ttk.Button(toolbar, text="Ajustar a ventana", command=fit).pack(side=tk.LEFT, padx=4)
+        ttk.Button(toolbar, text="Acercar +", command=lambda: zoom(1.25)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(toolbar, text="Alejar −", command=lambda: zoom(.8)).pack(side=tk.LEFT, padx=4)
+        ttk.Button(toolbar, text="Cerrar", command=viewer.destroy).pack(side=tk.RIGHT, padx=4)
+        canvas.bind("<Configure>", render)
+        viewer.bind("<Escape>", lambda event: viewer.destroy())
 
     def _build_status_bar(self):
         self.status_bar = tk.Frame(self, bg="#e2e8f0", bd=1, relief=tk.SUNKEN, padx=8, pady=4)
@@ -426,42 +543,33 @@ class AcousticLabApp(tk.Tk):
     def set_status(self, text: str):
         self.lbl_status.config(text=text)
 
-    def _on_length_change(self):
+    def _update_record_button(self, *args):
+        if self.is_recording:
+            return
         try:
-            l_cm = self.var_length_cm.get()
-            l_m = l_cm / 100.0
-            self.lbl_length_m.config(text=f"Equivalente en metros: L = {l_m:.3f} m")
-
-            # Si ya tenemos frecuencia detectada, recalcular al instante
-            if self.current_freq_hz > 0:
-                self._compute_and_display(l_m, self.current_freq_hz)
-        except Exception:
-            pass
-
-    def _on_duration_change(self):
-        try:
-            d = max(0.5, float(self.var_duration.get()))
-            self.btn_record.config(text=f"🎙️ CAPTURAR SONIDO CON MICRÓFONO ({d:.1f} s)")
-        except Exception:
-            pass
+            duration = self._number(self.var_duration)
+            label = f" ({duration:.1f} s)" if .5 <= duration <= 10 else ""
+        except (ValueError, tk.TclError):
+            label = ""
+        self.btn_record.config(text=f"🎙  CAPTURAR SONIDO CON MICRÓFONO{label}", bg="#2563eb")
 
     def _capture_sound(self):
-        """Captura audio del micrófono y analiza con FFT (Sección 3 y 5)."""
         try:
-            dur = max(0.5, float(self.var_duration.get()))
-        except Exception:
-            dur = 2.0
-
-        self.is_recording = True
-        self.btn_record.config(state=tk.DISABLED, text=f"⏳ GRABANDO AUDIO... ({dur:.1f} s)", bg="#d97706")
-        self.set_status(f"Grabando audio del micrófono ({dur:.1f} segundos)... Sople sobre la boca del tubo...")
-        self.update()
-
-        audio = record_microphone(duration_sec=dur, sample_rate=44100)
-
-        self.is_recording = False
-        self.btn_record.config(state=tk.NORMAL, text=f"🎙️ CAPTURAR SONIDO CON MICRÓFONO ({dur:.1f} s)", bg="#2563eb")
-        self._process_audio_signal(audio, sample_rate=44100)
+            duration = self._number(self.var_duration)
+            if not .5 <= duration <= 10:
+                raise ValueError("La duración debe estar entre 0.5 y 10 segundos.")
+            self.is_recording = True
+            self.btn_record.config(state=tk.DISABLED, text=f"🎙  GRABANDO AUDIO... ({duration:.1f} s)", bg="#d97706")
+            self.update()
+            audio = record_microphone(duration_sec=duration, sample_rate=44100)
+            self._process_audio_signal(audio, 44100)
+        except Exception as error:
+            self._invalidate_frequency()
+            messagebox.showerror("Captura de audio", str(error))
+        finally:
+            self.is_recording = False
+            self.btn_record.config(state=tk.NORMAL)
+            self._update_record_button()
 
     def _animate_wave_header(self):
         """Dibuja en tiempo real las ondas acústicas en el recuadro del encabezado."""
@@ -545,229 +653,161 @@ class AcousticLabApp(tk.Tk):
         except Exception as e:
             messagebox.showerror("Error", f"No se pudo cargar el audio: {e}")
 
-    def _input_manual_freq(self):
-        """Permite ingresar manualmente la frecuencia fundamental f1."""
-        dlg = tk.Toplevel(self)
-        dlg.title("Ingresar Frecuencia Fundamental Manual")
-        dlg.geometry("320x180")
-        dlg.resizable(False, False)
-        dlg.transient(self)
-        dlg.grab_set()
-
-        frame = ttk.Frame(dlg, padding=16)
-        frame.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(frame, text="Frecuencia fundamental f1 (Hz):", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W, pady=(0, 4))
-        ent_f = ttk.Entry(frame, font=("Segoe UI", 11))
-        ent_f.insert(0, "425.0")
-        ent_f.pack(fill=tk.X, pady=(0, 15))
-
-        def _apply():
-            try:
-                f_val = float(ent_f.get())
-                if f_val <= 0:
-                    raise ValueError()
-                dlg.destroy()
-                l_cm = self.var_length_cm.get()
-                self._compute_and_display(l_cm / 100.0, f_val)
-                self._register_measurement(silent=True)
-                self.set_status(f"Frecuencia manual ingresada y registrada: {f_val:.1f} Hz")
-            except ValueError:
-                messagebox.showerror("Error", "Ingrese una frecuencia numérica positiva.", parent=dlg)
-
-        ttk.Button(frame, text="Aceptar y Calcular", command=_apply).pack(fill=tk.X)
-
-    def _process_audio_signal(self, audio: np.ndarray, sample_rate: int = 44100):
-        """Aplica filtro para reducir ruido ambiental y FFT (Sección 5 y 8)."""
-        # Filtro de ruido ambiental
-        filtered = filter_ambient_noise(audio, sample_rate=sample_rate)
-
-        # FFT
-        freqs, mags = analyze_fft(filtered, sample_rate=sample_rate)
-
-        # Detección del pico de resonancia
-        peak_info = detect_resonance_frequency(freqs, mags, min_freq=120.0, max_freq=1800.0)
-        f1 = peak_info["frequency_hz"]
-        peak_amp = peak_info["amplitude"]
-
-        self.last_audio_data = audio
-        self.last_freqs = freqs
-        self.last_mags = mags
-        self.current_freq_hz = f1
-
-        # Redibujar espectro FFT con columnas bien visibles y auto-escalado dinámico
+    def _invalidate_frequency(self):
+        self.current_freq_hz = 0.0
+        self.current_calc_result = None
+        self.last_audio_data = None
+        self.var_frequency.set("Frecuencia: pendiente de captura")
+        self.btn_register.config(state=tk.DISABLED)
+        self.lbl_resultado_v.config(text="Velocidad experimental: pendiente")
         self.ax_fft.clear()
-        self.ax_fft.grid(True, linestyle="--", alpha=0.4)
-        self.ax_fft.set_xlabel("Frecuencia (Hz)", fontsize=8)
-        self.ax_fft.set_ylabel("Amplitud", fontsize=8)
-        self.ax_fft.set_xlim(100, 1500)
+        self.ax_fft.set(title="Espectro FFT: sin captura válida", xlabel="Frecuencia (Hz)", ylabel="Amplitud")
+        self.canvas_fft.draw_idle()
 
-        mask = (freqs >= 100) & (freqs <= 1500)
-        if np.any(mask):
-            sub_f = freqs[mask]
-            sub_m = mags[mask]
-            max_m = np.max(sub_m) if len(sub_m) > 0 else 1.0
-
-            # 1. Relleno bajo la curva para que parezca una columna espectral visible
-            self.ax_fft.fill_between(sub_f, 0, sub_m, color="#93c5fd", alpha=0.45, label="Espectro FFT")
-            # 2. Línea de contorno azul fuerte
-            self.ax_fft.plot(sub_f, sub_m, color="#1d4ed8", lw=1.8)
-
-            # Auto-escalar el eje Y a la amplitud real del pico para que siempre se vea alto y claro
-            ylim_top = max(0.005, max_m * 1.35)
-            self.ax_fft.set_ylim(0.0, ylim_top)
-
-            if f1 > 0:
-                # 3. Línea vertical destacada en el pico fundamental f1
-                self.ax_fft.vlines(f1, 0, peak_amp, color="#dc2626", linestyle="--", lw=1.5)
-                # 4. Punto rojo marcador en la cúspide
-                self.ax_fft.plot([f1], [peak_amp], "ro", markersize=8, label=f"Pico f₁ = {f1:.1f} Hz")
-                # 5. Etiqueta de texto con la frecuencia exacta
-                self.ax_fft.text(
-                    f1,
-                    min(ylim_top * 0.96, peak_amp + ylim_top * 0.04),
-                    f"f₁ = {f1:.1f} Hz",
-                    color="#b91c1c",
-                    fontweight="bold",
-                    fontsize=9,
-                    ha="center"
-                )
-                self.ax_fft.set_title(f"Espectro FFT (Pico f₁ = {f1:.1f} Hz)", fontsize=10, fontweight="bold", color="#1e3a8a")
-            else:
-                self.ax_fft.set_title("Espectro FFT (Picos de Frecuencia)", fontsize=10, fontweight="bold", color="#1e3a8a")
-
-            self.ax_fft.legend(loc="upper right", fontsize=8)
-
-        self.canvas.draw_idle()
-
-        # Realizar los cálculos físicos
-        l_cm = self.var_length_cm.get()
-        l_m = l_cm / 100.0
-        self._compute_and_display(l_m, f1)
-
-        # Agregar automáticamente esta medición a la tabla
-        self._register_measurement(silent=True)
-        self.set_status(f"Medición completada y registrada en la tabla: L = {l_cm:.1f} cm, f₁ = {f1:.1f} Hz.")
-
-    def _compute_and_display(self, length_m: float, freq_hz: float):
-        """Calcula la velocidad del sonido según v = 4 * L * f1 y actualiza la pantalla."""
-        if length_m <= 0 or freq_hz <= 0:
+    def _input_manual_freq(self):
+        from tkinter import simpledialog
+        text = simpledialog.askstring("Frecuencia manual", "Frecuencia de resonancia (Hz):", parent=self)
+        if text is None:
             return
+        try:
+            frequency = float(text.strip().replace(",", "."))
+            if not np.isfinite(frequency) or frequency <= 0:
+                raise ValueError("Ingrese una frecuencia finita mayor a cero.")
+            self._invalidate_frequency()
+            self.current_freq_hz = frequency
+            self.var_frequency.set(f"Frecuencia manual: {frequency:.2f} Hz")
+            self._on_geometry_change()
+        except ValueError as error:
+            messagebox.showerror("Frecuencia manual", str(error))
 
-        self.current_length_cm = length_m * 100.0
-        self.current_freq_hz = freq_hz
+    def _process_audio_signal(self, audio, sample_rate=44100):
+        self._invalidate_frequency()
+        audio = np.asarray(audio)
+        if audio.size == 0 or not np.all(np.isfinite(audio)) or np.max(np.abs(audio)) <= 1e-8:
+            raise ValueError("El audio está vacío o no contiene una señal válida.")
+        filtered = filter_ambient_noise(audio, sample_rate=sample_rate, low_cutoff=40, high_cutoff=2500)
+        freqs, mags = analyze_fft(filtered, sample_rate=sample_rate)
+        peak = detect_resonance_frequency(freqs, mags, min_freq=50, max_freq=2500)
+        if peak["frequency_hz"] <= 0 or peak["amplitude"] <= 1e-8:
+            raise ValueError("No se encontró un pico entre 50 y 2500 Hz.")
+        self.last_audio_data, self.last_freqs, self.last_mags = audio, freqs, mags
+        self.current_freq_hz = peak["frequency_hz"]
+        self.var_frequency.set(f"Pico dominante FFT: {self.current_freq_hz:.2f} Hz")
+        self.ax_fft.clear()
+        mask = (freqs >= 50) & (freqs <= 2500)
+        self.ax_fft.plot(freqs[mask], mags[mask], color="#2563eb")
+        self.ax_fft.plot([self.current_freq_hz], [peak["amplitude"]], "ro", label=f"Pico: {self.current_freq_hz:.2f} Hz")
+        self.ax_fft.set(title="Espectro FFT", xlabel="Frecuencia (Hz)", ylabel="Amplitud", xlim=(50, 2500))
+        self.ax_fft.grid(alpha=.3)
+        self.ax_fft.legend(fontsize=8)
+        self.canvas_fft.draw_idle()
+        self._on_geometry_change()
+        self.set_status("Audio analizado. Revise el modelo y registre la medición en Cálculos y gráficas.")
 
-        calc = calculate_speed_of_sound(length_m, freq_hz, theoretical_speed=343.0)
+    def _compute_and_display(self):
+        calc = self._calculate(self.current_freq_hz)
         self.current_calc_result = calc
-
-        # Mostrar exactamente la sustitución de la fórmula
-        self.lbl_sustitucion.config(text=f"v = 4 · ({length_m:.3f} m) · ({freq_hz:.1f} Hz)")
-        self.lbl_resultado_v.config(text=f"Velocidad Experimental: v = {calc['v_experimental']:.2f} m/s")
-
-        self.lbl_comparacion.config(
-            text=(
-                f"Valor teórico a 20 °C : {calc['v_theoretical']:.1f} m/s\n"
-                f"Error porcentual     : {calc['error_porcentual']:.2f} %\n"
-                f"Precisión de medición : {calc['precision']:.2f} %"
-            )
-        )
-
+        self.lbl_sustitucion.config(text=calc["sustitucion_text"])
+        self.lbl_resultado_v.config(text=f"Velocidad experimental: {calc['v_experimental']:.2f} m/s")
+        self._update_theory_explanation()
         self.btn_register.config(state=tk.NORMAL)
 
-    def _register_measurement(self, silent: bool = False):
-        """Agrega la medición actual a la tabla de resultados (Sección 8 y 9)."""
-        if not self.current_calc_result:
-            return
-
-        l_cm = self.current_length_cm
-        f1 = self.current_freq_hz
-
-        entry = self.registry.add_measurement(length_cm=l_cm, frequency_hz=f1)
-
-        self.tree.insert("", tk.END, values=(
-            entry["id"],
-            f"{entry['length_cm']:.1f}",
-            f"{entry['frequency_hz']:.1f}",
-            entry["formula"],
-            f"{entry['v_calculada']:.2f}",
-            f"{entry['v_teorica']:.1f}",
-            f"{entry['error_pct']:.2f}%",
-            f"{entry['precision_pct']:.2f}%"
-        ))
-
-        # Seleccionar la fila recién agregada
-        children = self.tree.get_children()
-        if children:
+    def _register_measurement(self, silent=False):
+        try:
+            if self.current_freq_hz <= 0:
+                raise ValueError("Capture audio o ingrese una frecuencia primero.")
+            self._compute_and_display()
+            entry = self.registry.add_measurement(frequency_hz=self.current_freq_hz, **self._geometry_inputs())
+            self._refresh_table()
+            self._update_comparison_plot()
+            children = self.tree.get_children()
             self.tree.selection_set(children[-1])
             self.tree.see(children[-1])
+            self.set_status(f"Medición #{entry['id']} registrada: {entry['v_calculada']:.2f} m/s.")
+        except (ValueError, TypeError, tk.TclError) as error:
+            self.current_calc_result = None
+            self.btn_register.config(state=tk.DISABLED)
+            messagebox.showerror("Datos inválidos", str(error))
 
-        self._update_comparison_plot()
-        self.set_status(f"Medición #{entry['id']} registrada en la tabla: L = {l_cm:.1f} cm, f1 = {f1:.1f} Hz, v = {entry['v_calculada']:.2f} m/s")
-
-        if not silent:
-            messagebox.showinfo("Medición Registrada", f"Se agregó la medición a la tabla:\n\n• Longitud L: {l_cm:.1f} cm ({l_cm/100:.3f} m)\n• Frecuencia f1: {f1:.1f} Hz\n• v = 4 · L · f1 = {entry['v_calculada']:.2f} m/s\n• Error respecto a 343 m/s: {entry['error_pct']:.2f}%")
+    def _refresh_table(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for entry in self.registry.measurements:
+            values = []
+            for column in self.table_columns:
+                value = entry.get(column)
+                if column == "model":
+                    value = "Tubo" if value == "tube" else "Botella"
+                elif isinstance(value, float):
+                    value = f"{value:.3f}"
+                values.append("—" if value is None else value)
+            self.tree.insert("", tk.END, values=values)
+        self.statistics_tab.refresh(self.registry.measurements)
 
     def _update_comparison_plot(self):
-        """Actualiza la gráfica comparativa de cómo cambia la frecuencia con la cantidad de agua (Sección 8)."""
-        lengths_cm, freqs_hz, _ = self.registry.get_data_arrays()
-
-        # Curva teórica f = 343 / (4 * L) para L entre 8 y 50 cm
-        l_dense_cm = np.linspace(8.0, 50.0, 100)
-        f_dense_theo = [calculate_theoretical_frequency(l / 100.0, sound_speed=343.0) for l in l_dense_cm]
-
-        self.line_theo_comp.set_data(l_dense_cm, f_dense_theo)
-
-        if lengths_cm:
-            self.scatter_comp.set_data(lengths_cm, freqs_hz)
-            all_l = list(lengths_cm) + [10, 45]
-            all_f = list(freqs_hz) + [min(f_dense_theo), max(f_dense_theo)]
-            self.ax_comp.set_xlim(min(all_l) - 2, max(all_l) + 2)
-            self.ax_comp.set_ylim(min(all_f) * 0.85, max(all_f) * 1.15)
-        else:
-            self.scatter_comp.set_data([], [])
-            self.ax_comp.set_xlim(8, 50)
-            self.ax_comp.set_ylim(150, 1100)
-
+        self.ax_comp.clear()
+        self.ax_speed.clear()
+        model = self.var_model.get()
+        records = [m for m in self.registry.measurements if m["model"] == model]
+        # A continuous curve uses only the current geometry. Historical points use
+        # their own stored theoretical frequency, even if the dimensions changed.
+        try:
+            geometry = self._geometry_inputs()
+            reference = self._calculate(1.0)["v_theoretical"]
+            if model == "tube":
+                xs = np.linspace(min([8] + [m["length_cm"] for m in records] + [geometry["length_cm"]]),
+                                 max([50] + [m["length_cm"] for m in records] + [geometry["length_cm"]]), 160)
+                diameter = None if geometry["diameter_cm"] is None else geometry["diameter_cm"] / 100
+                ys = [calculate_theoretical_frequency(x / 100, sound_speed=reference, diameter_meters=diameter) for x in xs]
+            else:
+                upper = max([geometry["body_volume_ml"]] + [m["air_volume_ml"] for m in records])
+                lower = min([upper * .1, geometry["body_volume_ml"] - geometry["water_volume_ml"]] + [m["air_volume_ml"] for m in records])
+                xs = np.linspace(lower, upper, 160)
+                ys = [calculate_helmholtz_frequency(geometry["diameter_cm"] / 100,
+                      geometry["neck_length_cm"] / 100, x * 1e-6, 0, sound_speed=reference) for x in xs]
+            self.ax_comp.plot(xs, ys, "g--", label=f"Teoría actual: {geometry['temperature_celsius']:g} °C")
+        except (ValueError, TypeError, tk.TclError):
+            pass
+        key = "length_cm" if model == "tube" else "air_volume_ml"
+        xs = [m[key] for m in records]
+        if records:
+            self.ax_comp.scatter(xs, [m["frequency_hz"] for m in records], label="Frecuencia medida", color="#2563eb")
+            self.ax_comp.scatter(xs, [m["theoretical_frequency_hz"] for m in records], label="Teoría de cada registro", marker="x", color="#d97706")
+            self.ax_speed.scatter(xs, [m["v_calculada"] for m in records], label="Velocidad medida", color="#2563eb")
+        try:
+            temperature = self._number(self.var_temperature_celsius)
+            reference = calculate_reference_speed(temperature)
+            self.ax_speed.axhline(reference, linestyle="--", color="green",
+                                  label=f"Referencia: {reference:.2f} m/s ({temperature:g} °C)")
+        except (ValueError, TypeError, tk.TclError):
+            pass
+        if records:
+            self.ax_speed.scatter(xs, [m["v_teorica"] for m in records],
+                                  label="Referencia de cada registro", marker="x", color="#d97706")
+        xlabel = "Longitud de aire L (cm)" if model == "tube" else "Volumen de aire V (mL)"
+        container_name = "Tubo uniforme" if model == "tube" else "Botella"
+        self.ax_comp.set(title=f"Frecuencia vs Nivel de Aire ({container_name})", xlabel=xlabel, ylabel="Frecuencia (Hz)")
+        self.ax_speed.set(xlabel=xlabel, ylabel="Velocidad (m/s)")
+        for ax in (self.ax_comp, self.ax_speed):
+            ax.grid(alpha=.3)
+            if ax.get_legend_handles_labels()[0]:
+                ax.legend(fontsize=8)
         self.canvas.draw_idle()
 
     def _delete_selected(self):
-        sel = self.tree.selection()
-        if not sel:
-            messagebox.showinfo("Aviso", "Seleccione una fila de la tabla para eliminarla.")
+        selected = self.tree.selection()
+        if not selected:
             return
-
-        item = self.tree.item(sel[0])
-        idx = int(item["values"][0]) - 1
-        self.registry.remove_measurement(idx)
-
-        # Recargar tabla
-        for item in self.tree.get_children():
-            self.tree.delete(item)
-
-        for m in self.registry.measurements:
-            self.tree.insert("", tk.END, values=(
-                m["id"],
-                f"{m['length_cm']:.1f}",
-                f"{m['frequency_hz']:.1f}",
-                m["formula"],
-                f"{m['v_calculada']:.2f}",
-                f"{m['v_teorica']:.1f}",
-                f"{m['error_pct']:.2f}%",
-                f"{m['precision_pct']:.2f}%"
-            ))
-
+        index = int(self.tree.item(selected[0])["values"][0]) - 1
+        self.registry.remove_measurement(index)
+        self._refresh_table()
         self._update_comparison_plot()
-        self.set_status("Medición eliminada.")
 
     def _clear_table(self):
-        if not self.registry.measurements:
-            return
-        if messagebox.askyesno("Confirmar", "¿Desea limpiar todas las mediciones registradas?"):
+        if self.registry.measurements and messagebox.askyesno("Confirmar", "¿Limpiar todas las mediciones?"):
             self.registry.clear()
-            for item in self.tree.get_children():
-                self.tree.delete(item)
+            self._refresh_table()
             self._update_comparison_plot()
-            self.set_status("Tabla de mediciones limpiada.")
 
     def _export_csv(self):
         if not self.registry.measurements:
