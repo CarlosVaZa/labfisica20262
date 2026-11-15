@@ -4,7 +4,7 @@ Este proyecto implementa el sistema completo de medición de la velocidad del so
 
 ## Interfaz y procedimiento
 
-1. **Captura y análisis FFT**: selecciona tubo uniforme o botella y completa sus medidas. Captura audio del micrófono, carga un WAV o ingresa una frecuencia manual.
+1. **Captura y análisis FFT**: selecciona tubo uniforme o botella, completa sus medidas e ingresa la temperatura ambiental en °C. Captura audio del micrófono, carga un WAV o ingresa una frecuencia manual.
 2. **Cálculos y gráficas**: revisa fórmula, sustitución, velocidad, frecuencia teórica y error. Pulsa **Registrar esta medición** después de comprobar los datos. Cambiar las dimensiones recalcula la vista, sin modificar mediciones anteriores.
 3. **Tabla de Resultados experimentales**: consulta los dos modelos, elimina filas y exporta a CSV. La tabla tiene desplazamiento vertical y horizontal. El CSV puede abrirse con Excel; no es un archivo `.xlsx`.
 
@@ -101,7 +101,41 @@ La CLI conserva el modelo ideal de tubo:
 .\.venv\Scripts\python.exe cli.py --length-cm 20 --freq-hz 425
 ```
 
-## Pruebas
+## Análisis estadístico
+
+La cuarta pestaña, «Análisis estadístico», permite seleccionar tubo uniforme o botella (Helmholtz).
+Contiene las mediciones utilizadas y la gráfica de regresión con su ecuación.
+La quinta pestaña, «Resultados estadísticos globales», contiene la velocidad global,
+la comparación teórica, el intervalo de confianza y los avisos. Se sincroniza
+automáticamente con el modelo seleccionado en la cuarta pestaña.
+Cada análisis utiliza únicamente mediciones registradas del modelo seleccionado,
+sin combinar los dos modelos. La tabla, la gráfica y los resultados cambian al
+seleccionar el modelo y al registrar o eliminar mediciones.
+
+| Modelo | Variable X (m⁻¹) | Velocidad global |
+|--------|------------------|------------------|
+| Tubo uniforme | `1 / L efectiva` | `v = 4m` |
+| Botella (Helmholtz) | `sqrt(A / (V aire * L efectiva))` | `v = 2πm` |
+
+Se ajusta la frecuencia experimental frente a X mediante mínimos cuadrados con
+intercepto libre. Se muestran pendiente, intercepto, R², velocidad global e
+intervalo de confianza del 95 % mediante t de Student. El intervalo de pendiente
+se transforma a velocidad con el factor correspondiente a cada modelo.
+
+Se necesitan dos mediciones con valores X distintos para el ajuste y tres para
+el intervalo. Para botella se requieren además tres valores X distintos para
+el intervalo. En tubo se recomiendan cinco longitudes distintas para completar
+el procedimiento experimental. La botella utiliza el área y la longitud efectiva
+guardadas, y convierte su volumen de aire registrado de mL a m³.
+La referencia global de botella promedia las velocidades teóricas guardadas;
+el tubo conserva su referencia calculada a partir de las temperaturas originales.
+Se muestra un aviso si el rango de temperatura es de al menos 2 °C; este umbral
+es informativo. El ajuste supone una velocidad común y no incorpora incertidumbre
+de longitud. Los registros nuevos conservan además la frecuencia experimental
+completa en `frequency_hz_full_precision`; los anteriores usan la precisión disponible.
+El análisis se actualiza al registrar, eliminar o limpiar mediciones.
+
+## Pruebas de la aplicación
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover tests

@@ -17,6 +17,25 @@ import csv
 
 class TestDataManager(unittest.TestCase):
 
+    def test_temperature_saved_per_measurement(self):
+        first = self.registry.add_measurement(20, 425, temperature_celsius=20)
+        second = self.registry.add_measurement(20, 425, temperature_celsius=30)
+        self.assertEqual(first["temperature_celsius"], 20)
+        self.assertEqual(first["v_teorica"], 343.42)
+        self.assertEqual(second["v_teorica"], 349.48)
+        self.assertGreater(second["theoretical_frequency_hz"], first["theoretical_frequency_hz"])
+        self.assertEqual(first["v_calculada"], second["v_calculada"])
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "temperature.csv")
+            self.registry.export_csv(path)
+            with open(path, encoding="utf-8", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(float(rows[0]["temperature_celsius"]), 20)
+            self.assertEqual(float(rows[1]["v_teorica"]), 349.48)
+        with self.assertRaises(ValueError):
+            self.registry.add_measurement(20, 425, temperature_celsius=float("nan"))
+        self.assertEqual(len(self.registry.measurements), 2)
+
     def test_models_and_csv_dimensions(self):
         tube = self.registry.add_measurement(20, 425, diameter_cm=4)
         frequency = calculate_helmholtz_frequency(.028, .032, .0006, .0002)

@@ -5,7 +5,7 @@ Medición de la velocidad del sonido mediante resonancia acústica y programaci�
 
 Modelos: tubo ideal, tubo con corrección de abertura y botella de Helmholtz.
 Pestañas: captura y FFT, cálculos y gráficas, y resultados experimentales.
-Entradas en cm y mL, cálculos en SI; referencia: 343 m/s a 20 °C.
+Entradas en cm y mL, cálculos en SI; referencia calculada según la temperatura ambiental.
 """
 
 import tkinter as tk
@@ -18,10 +18,11 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from core.physics_engine import (calculate_speed_of_sound, calculate_theoretical_frequency,
-                                 calculate_helmholtz_speed, calculate_helmholtz_frequency)
+                                 calculate_helmholtz_speed, calculate_helmholtz_frequency, calculate_reference_speed)
 from core.signal_processing import filter_ambient_noise, analyze_fft, detect_resonance_frequency
 from core.audio_capture import record_microphone, load_audio_wav
 from core.data_manager import ExperimentRegistry
+from gui.statistics_tab import StatisticsTab
 
 
 class AcousticLabApp(tk.Tk):
@@ -178,6 +179,11 @@ class AcousticLabApp(tk.Tk):
         self.notebook.add(capture_tab, text="Captura y análisis FFT")
         self.notebook.add(calc_tab, text="Cálculos y gráficas")
         self.notebook.add(results_tab, text="Tabla de Resultados experimentales")
+        self.statistics_tab = StatisticsTab(self.notebook, self._scroll_panel)
+        self.notebook.add(self.statistics_tab, text="Análisis estadístico")
+        self.notebook.add(self.statistics_tab.results_tab, text="Resultados estadísticos globales")
+        self.statistics_tab.refresh(self.registry.measurements)
+        self.var_temperature_celsius = tk.StringVar(value="20")
         self.var_model = tk.StringVar(value="tube")
         self.var_length_cm = tk.StringVar(value="20")
         self.var_diameter_cm = tk.StringVar(value="")
@@ -203,6 +209,7 @@ class AcousticLabApp(tk.Tk):
             row.pack(fill=tk.X, pady=4)
             ttk.Label(row, text=label, wraplength=230).pack(side=tk.LEFT)
             ttk.Entry(row, textvariable=variable, width=12).pack(side=tk.RIGHT)
+        field(geometry, "Temperatura ambiental (°C)", self.var_temperature_celsius)
         field(self.tube_fields, "Longitud de aire L (cm)", self.var_length_cm)
         field(self.tube_fields, "Diámetro interior D (cm, opcional)", self.var_diameter_cm)
         ttk.Label(self.tube_fields, text="L: desde el agua hasta la abertura.\nD vacío: modelo ideal; con D: corrección 0.61r.", wraplength=340).pack(anchor=tk.W, pady=4)
@@ -293,7 +300,7 @@ class AcousticLabApp(tk.Tk):
         self.lbl_resultado_v = ttk.Label(calc_box, text="Velocidad experimental: pendiente", font=("Segoe UI", 13, "bold"), foreground="#2563eb")
         self.lbl_resultado_v.pack(anchor=tk.W, pady=4)
         self.lbl_comparacion = ttk.Label(calc_box, wraplength=700,
-            text="Teorico: 343 m/s como velocidad de referencia del sonido en el aire a 20 °C.")
+            text="")
         self.lbl_comparacion.pack(anchor=tk.W, pady=4)
         self.lbl_theory_title = ttk.Label(calc_box, wraplength=700, font=("Segoe UI", 10, "bold"))
         self.lbl_theory_title.pack(anchor=tk.W, pady=(12, 4))
@@ -320,7 +327,8 @@ class AcousticLabApp(tk.Tk):
                    "frequency_hz": "f medida (Hz)", "theoretical_frequency_hz": "f teórica (Hz)",
                    "formula": "Fórmula", "v_calculada": "v exp (m/s)", "error_pct": "Error (%)",
                    "neck_length_cm": "ℓ cuello (cm)", "body_volume_ml": "Cuerpo (mL)",
-                   "water_volume_ml": "Agua (mL)", "air_volume_ml": "Aire (mL)"}
+                   "water_volume_ml": "Agua (mL)", "air_volume_ml": "Aire (mL)",
+                   "temperature_celsius": "T (°C)", "v_teorica": "v teórica (m/s)"}
         self.table_columns = list(columns)
         self.tree = ttk.Treeview(table_box, columns=self.table_columns, show="headings", height=10)
         for key, label in columns.items():
@@ -339,7 +347,7 @@ class AcousticLabApp(tk.Tk):
         ttk.Button(buttons, text="Eliminar seleccionado", command=self._delete_selected).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Limpiar tabla", command=self._clear_table).pack(side=tk.LEFT, padx=4)
         ttk.Button(buttons, text="Exportar CSV", command=self._export_csv).pack(side=tk.RIGHT, padx=4)
-        for variable in (self.var_model, self.var_length_cm, self.var_diameter_cm, self.var_neck_diameter_cm,
+        for variable in (self.var_temperature_celsius, self.var_model, self.var_length_cm, self.var_diameter_cm, self.var_neck_diameter_cm,
                          self.var_neck_length_cm, self.var_body_volume_ml, self.var_water_volume_ml):
             variable.trace_add("write", self._on_geometry_change)
         self._on_geometry_change()
@@ -352,21 +360,24 @@ class AcousticLabApp(tk.Tk):
         return value
 
     def _geometry_inputs(self):
+        temperature = self._number(self.var_temperature_celsius)
+        calculate_reference_speed(temperature)
         if self.var_model.get() == "tube":
-            return dict(model="tube", length_cm=self._number(self.var_length_cm),
+            return dict(model="tube", temperature_celsius=temperature, length_cm=self._number(self.var_length_cm),
                         diameter_cm=None if not self.var_diameter_cm.get().strip() else self._number(self.var_diameter_cm))
-        return dict(model="bottle", diameter_cm=self._number(self.var_neck_diameter_cm),
+        return dict(model="bottle", temperature_celsius=temperature, diameter_cm=self._number(self.var_neck_diameter_cm),
                     neck_length_cm=self._number(self.var_neck_length_cm),
                     body_volume_ml=self._number(self.var_body_volume_ml),
                     water_volume_ml=self._number(self.var_water_volume_ml))
 
     def _calculate(self, frequency):
         inputs = self._geometry_inputs()
+        reference = calculate_reference_speed(inputs["temperature_celsius"])
         if inputs["model"] == "tube":
-            return calculate_speed_of_sound(inputs["length_cm"] / 100, frequency,
+            return calculate_speed_of_sound(inputs["length_cm"] / 100, frequency, theoretical_speed=reference,
                 diameter_meters=None if inputs["diameter_cm"] is None else inputs["diameter_cm"] / 100)
         return calculate_helmholtz_speed(inputs["diameter_cm"] / 100, inputs["neck_length_cm"] / 100,
-            inputs["body_volume_ml"] * 1e-6, inputs["water_volume_ml"] * 1e-6, frequency)
+            inputs["body_volume_ml"] * 1e-6, inputs["water_volume_ml"] * 1e-6, frequency, theoretical_speed=reference)
 
     def _on_geometry_change(self, *args):
         self.btn_measurement_guide.config(text=("Cómo medir la botella y obtener sus fórmulas"
@@ -420,7 +431,7 @@ class AcousticLabApp(tk.Tk):
         if self.var_model.get() == "bottle":
             name = "Botella"
             speed_lines = [r"$v = 2\pi \cdot f_H \cdot \sqrt{\frac{V_{\mathrm{aire}} \cdot L_{\mathrm{ef}}}{A}}$"]
-            frequency = "fₕ = (343 / 2π) × √[A / (Vaire × Lef)]"
+            frequency = "fₕ = (v teórica / 2π) × √[A / (Vaire × Lef)]"
         else:
             speed_lines = [
                 r"$f_1 = v / (4 \cdot L)\quad\Rightarrow\quad v = 4\cdot L\cdot f_1$",
@@ -428,12 +439,37 @@ class AcousticLabApp(tk.Tk):
             ]
             if self.var_diameter_cm.get().strip():
                 name = "Tubo con corrección del radio"
-                frequency = "f₁ ≈ 343 / [4 × (L + 0.61 × r)]"
+                frequency = "f₁ ≈ v teórica / [4 × (L + 0.61 × r)]"
             else:
                 name = "Tubo ideal"
-                frequency = "f₁ = 343 / (4 × L)"
+                frequency = "f₁ = v teórica / (4 × L)"
         self.lbl_theory_title.config(text=f"Frecuencia Teórica del modelo ({name})")
         self._set_formula_lines(self.formula_canvas, speed_lines)
+        try:
+            temperature = self._number(self.var_temperature_celsius)
+            reference = calculate_reference_speed(temperature)
+            comparison = ("Velocidad teórica del sonido en el aire:\n"
+                          "v teórica = 331.3 + 0.606 × T\n"
+                          f"v teórica = 331.3 + 0.606 × ({temperature:g}) = {reference:.2f} m/s\n"
+                          "T: temperatura ambiental en °C.")
+            if self.current_calc_result is not None:
+                comparison += f"\nError experimental: {self.current_calc_result['error_porcentual']:.2f} %"
+            self.lbl_comparacion.config(text=comparison)
+            preview = self._calculate(1.0)
+            if preview["model"] == "bottle":
+                substitution = (f"fₕ = ({reference:.2f} / 2π) × √["
+                                f"{preview['area_m2']:.6g} / ({preview['air_volume_m3']:.6g} × "
+                                f"{preview['effective_length_meters']:.6g})]")
+            else:
+                substitution = f"f₁ = {reference:.2f} / (4 × {preview['effective_length_meters']:.6g})"
+            frequency += f"\n{substitution}\nf teórica = {preview['theoretical_frequency_hz']:.2f} Hz"
+        except (ValueError, TypeError, tk.TclError):
+            # Do not retain a previous theoretical result for invalid inputs.
+            try:
+                calculate_reference_speed(self._number(self.var_temperature_celsius))
+            except (ValueError, TypeError, tk.TclError):
+                self.lbl_comparacion.config(text="v teórica = 331.3 + 0.606 × T\nIngrese una temperatura ambiental válida (°C).")
+            frequency += "\nComplete los datos para calcular la frecuencia teórica."
         self.lbl_theory_formula.config(text=frequency)
 
     def _open_measurement_guide(self):
@@ -706,6 +742,7 @@ class AcousticLabApp(tk.Tk):
                     value = f"{value:.3f}"
                 values.append("—" if value is None else value)
             self.tree.insert("", tk.END, values=values)
+        self.statistics_tab.refresh(self.registry.measurements)
 
     def _update_comparison_plot(self):
         self.ax_comp.clear()
@@ -716,19 +753,19 @@ class AcousticLabApp(tk.Tk):
         # their own stored theoretical frequency, even if the dimensions changed.
         try:
             geometry = self._geometry_inputs()
-            self._calculate(1.0)  # Validate all geometry before plotting.
+            reference = self._calculate(1.0)["v_theoretical"]
             if model == "tube":
                 xs = np.linspace(min([8] + [m["length_cm"] for m in records] + [geometry["length_cm"]]),
                                  max([50] + [m["length_cm"] for m in records] + [geometry["length_cm"]]), 160)
                 diameter = None if geometry["diameter_cm"] is None else geometry["diameter_cm"] / 100
-                ys = [calculate_theoretical_frequency(x / 100, diameter_meters=diameter) for x in xs]
+                ys = [calculate_theoretical_frequency(x / 100, sound_speed=reference, diameter_meters=diameter) for x in xs]
             else:
                 upper = max([geometry["body_volume_ml"]] + [m["air_volume_ml"] for m in records])
                 lower = min([upper * .1, geometry["body_volume_ml"] - geometry["water_volume_ml"]] + [m["air_volume_ml"] for m in records])
                 xs = np.linspace(lower, upper, 160)
                 ys = [calculate_helmholtz_frequency(geometry["diameter_cm"] / 100,
-                      geometry["neck_length_cm"] / 100, x * 1e-6, 0) for x in xs]
-            self.ax_comp.plot(xs, ys, "g--", label="Teoría: dimensiones actuales")
+                      geometry["neck_length_cm"] / 100, x * 1e-6, 0, sound_speed=reference) for x in xs]
+            self.ax_comp.plot(xs, ys, "g--", label=f"Teoría actual: {geometry['temperature_celsius']:g} °C")
         except (ValueError, TypeError, tk.TclError):
             pass
         key = "length_cm" if model == "tube" else "air_volume_ml"
@@ -737,7 +774,16 @@ class AcousticLabApp(tk.Tk):
             self.ax_comp.scatter(xs, [m["frequency_hz"] for m in records], label="Frecuencia medida", color="#2563eb")
             self.ax_comp.scatter(xs, [m["theoretical_frequency_hz"] for m in records], label="Teoría de cada registro", marker="x", color="#d97706")
             self.ax_speed.scatter(xs, [m["v_calculada"] for m in records], label="Velocidad medida", color="#2563eb")
-        self.ax_speed.axhline(343, linestyle="--", color="green", label="Referencia: 343 m/s")
+        try:
+            temperature = self._number(self.var_temperature_celsius)
+            reference = calculate_reference_speed(temperature)
+            self.ax_speed.axhline(reference, linestyle="--", color="green",
+                                  label=f"Referencia: {reference:.2f} m/s ({temperature:g} °C)")
+        except (ValueError, TypeError, tk.TclError):
+            pass
+        if records:
+            self.ax_speed.scatter(xs, [m["v_teorica"] for m in records],
+                                  label="Referencia de cada registro", marker="x", color="#d97706")
         xlabel = "Longitud de aire L (cm)" if model == "tube" else "Volumen de aire V (mL)"
         container_name = "Tubo uniforme" if model == "tube" else "Botella"
         self.ax_comp.set(title=f"Frecuencia vs Nivel de Aire ({container_name})", xlabel=xlabel, ylabel="Frecuencia (Hz)")

@@ -25,6 +25,14 @@ def _positive(value: float, name: str) -> float:
     return value
 
 
+def calculate_reference_speed(temperature_celsius: float) -> float:
+    """Velocidad de referencia del aire en m/s: 331.3 + 0.606 T (°C)."""
+    temperature = float(temperature_celsius)
+    if not math.isfinite(temperature) or temperature <= -273.15:
+        raise ValueError("Ingrese una temperatura finita mayor que -273.15 °C.")
+    return _positive(331.3 + 0.606 * temperature, "La velocidad de referencia")
+
+
 def calculate_speed_of_sound(length_meters: float, frequency_hz: float, theoretical_speed: float = 343.0, diameter_meters=None) -> Dict[str, Any]:
     """
     Calcula la velocidad del sonido a partir de la longitud de la columna de aire y la frecuencia fundamental,
